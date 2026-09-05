@@ -27,12 +27,38 @@ PARSER_VERSION = "degiro-transactions-1"
 SOURCE = "degiro"
 
 
+class MalformedRow(Exception):
+    """A row could not be parsed. Carries the file and line so it can be found.
+
+    With 112 rows of 17 columns, an error that does not say *where* it failed turns
+    a two-minute fix into a bisect.
+    """
+
+
 def parse_transactions_csv(path: Path) -> list[NormalisedRow]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
         header = next(reader)
         assert_header(header, TRANSACTIONS_HEADER, path.name)
-        raw_rows = [row for row in reader if any(cell.strip() for cell in row)]
+        # Keep the physical line number: blank-row filtering makes a later enumerate()
+        # disagree with the file, and a parse error must name the line you can go read.
+        numbered = [
+            (line_no, row)
+            for line_no, row in enumerate(reader, start=2)
+            if any(cell.strip() for cell in row)
+        ]
+
+    raw_rows = [row for _, row in numbered]
+
+    # Validated before ref_inputs is built: that comprehension also indexes by
+    # TxnCol, so a short row would otherwise raise a bare, uncaught IndexError here
+    # rather than reaching the per-row try/except below.
+    for line_no, row in numbered:
+        if len(row) != len(TRANSACTIONS_RAW_FIELDS):
+            raise MalformedRow(
+                f"{path.name} line {line_no}: expected {len(TRANSACTIONS_RAW_FIELDS)} "
+                f"columns, got {len(row)}"
+            )
 
     ref_inputs = [
         RefInput(
@@ -46,10 +72,21 @@ def parse_transactions_csv(path: Path) -> list[NormalisedRow]:
     ]
     refs = assign_source_refs(ref_inputs)
 
-    return [_to_normalised(row, ref) for row, ref in zip(raw_rows, refs, strict=True)]
+    parsed: list[NormalisedRow] = []
+    for (line_no, row), ref in zip(numbered, refs, strict=True):
+        try:
+            parsed.append(_to_normalised(row, ref))
+        except (ValueError, IndexError) as exc:
+            raise MalformedRow(f"{path.name} line {line_no}: {exc}") from exc
+    return parsed
 
 
 def _to_normalised(row: list[str], source_ref: str) -> NormalisedRow:
+    if len(row) != len(TRANSACTIONS_RAW_FIELDS):
+        raise ValueError(
+            f"expected {len(TRANSACTIONS_RAW_FIELDS)} columns, got {len(row)}"
+        )
+
     quantity = parse_decimal(row[TxnCol.QUANTITY])
     order_ref = row[TxnCol.ORDER_ID].strip() or None
 

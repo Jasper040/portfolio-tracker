@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from app.ingest.degiro.dialect import UnexpectedHeader
-from app.ingest.degiro.transactions_csv import parse_transactions_csv
+from app.ingest.degiro.dialect import TRANSACTIONS_HEADER, UnexpectedHeader
+from app.ingest.degiro.transactions_csv import MalformedRow, parse_transactions_csv
 
 GOLDEN = Path(__file__).parents[1] / "golden" / "degiro_transactions_golden.csv"
 
@@ -90,3 +90,32 @@ def test_rejects_a_file_whose_header_changed(tmp_path: Path) -> None:
     bad.write_text("Date,Time,Product\n06-01-2025,09:00,X\n", encoding="utf-8")
     with pytest.raises(UnexpectedHeader):
         parse_transactions_csv(bad)
+
+
+def test_column_mapping_is_pinned_for_local_and_base_values(rows: list) -> None:
+    """A transposed LOCAL_VALUE/VALUE_EUR index would pass every other test here: the
+    broker-truth test asserts only an inequality, which survives a swap. Positional
+    correctness is this parser's entire reason to exist, so pin it to real values."""
+    aud = next(r for r in rows if r.isin == "AU0000000001")
+    assert aud.gross_local == Decimal("-50.00")  # Local value, in AUD
+    assert aud.value_base == Decimal("-30.30")  # Value EUR
+    assert aud.net_base == Decimal("-32.38")  # Total EUR
+
+
+def test_a_short_row_reports_its_line_number(tmp_path: Path) -> None:
+    """A bare IndexError across 112 rows of 17 columns locates nothing."""
+    bad = tmp_path / "short.csv"
+    bad.write_text(TRANSACTIONS_HEADER + "\n06-01-2025,09:00,X\n", encoding="utf-8")
+    with pytest.raises(MalformedRow) as exc:
+        parse_transactions_csv(bad)
+    assert "line 2" in str(exc.value)
+
+
+def test_a_malformed_number_reports_its_line_number(tmp_path: Path) -> None:
+    lines = GOLDEN.read_text(encoding="utf-8").strip().split("\n")
+    lines[1] = lines[1].replace('"10,0000"', '"10.0000"')  # English decimal
+    bad = tmp_path / "badnum.csv"
+    bad.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(MalformedRow) as exc:
+        parse_transactions_csv(bad)
+    assert "line 2" in str(exc.value)
