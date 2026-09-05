@@ -25,6 +25,15 @@ markers = [
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint]
+# Pinned explicitly: ruff's default rule set varies by version, and an unpinned
+# gate that changes under you is worse than no gate. E/F = pycodestyle+pyflakes,
+# I = import order, B = bugbear.
+# FURB is deliberately absent: FURB157 rewrites Decimal("1") to Decimal(1), and in
+# a codebase whose first rule is "money is Decimal, never float", constructing from
+# strings is the habit worth keeping.
+select = ["E", "F", "I", "B"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

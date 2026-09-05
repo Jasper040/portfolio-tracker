@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from datetime import date
 from decimal import Decimal
 
@@ -40,6 +41,8 @@ def test_fx_refuses_wrong_direction() -> None:
 
 
 def test_money_is_immutable() -> None:
+    """Frozen, and specifically frozen: a bare `Exception` here would also pass if
+    the assignment raised NameError, so it would assert almost nothing."""
     m = Money(Decimal("1"), "EUR")
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         m.amount = Decimal("2")  # type: ignore[misc]
