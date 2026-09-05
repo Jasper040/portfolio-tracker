@@ -71,9 +71,13 @@ def test_decimal_round_trips_exactly() -> None:
 
     with Session(engine) as s:
         txn = s.exec(select(Transaction)).one()
-        assert txn.price_local == Decimal("502.1500")
-        assert txn.net_base == Decimal("-883.10")
         assert isinstance(txn.price_local, Decimal)
+        # Value equality would NOT catch a lost scale: Decimal("502.15") equals
+        # Decimal("502.1500"). Pin the representation instead, so a stray
+        # .normalize() or a float round-trip in the read path fails loudly.
+        assert str(txn.price_local) == "502.1500"
+        assert txn.price_local.as_tuple().exponent == -4
+        assert str(txn.net_base) == "-883.10"
 
 
 def test_source_ref_is_unique() -> None:
@@ -118,11 +122,22 @@ def test_source_ref_is_unique() -> None:
         s.add(make("dupe"))
         s.commit()
         s.add(make("dupe"))
-        try:
+        with pytest.raises(IntegrityError):
             s.commit()
-        except IntegrityError:
-            return
-    raise AssertionError("duplicate source_ref was accepted")
+
+
+def test_money_column_rejects_a_float() -> None:
+    """The column type is the last boundary where "money is Decimal, never float"
+    can still be enforced. A float must raise, not be silently coerced."""
+    from sqlalchemy.dialects import sqlite
+
+    from app.models.types import DecimalString
+
+    col = DecimalString()
+    with pytest.raises(TypeError):
+        col.process_bind_param(0.1, sqlite.dialect())  # type: ignore[arg-type]
+    assert col.process_bind_param(Decimal("0.10"), sqlite.dialect()) == "0.10"
+    assert col.process_bind_param(None, sqlite.dialect()) is None
 
 
 def test_orphan_foreign_keys_are_rejected() -> None:

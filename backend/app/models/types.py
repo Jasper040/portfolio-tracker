@@ -26,6 +26,12 @@ class DecimalString(TypeDecorator[Decimal]):
     def process_bind_param(self, value: Decimal | None, dialect: Dialect) -> Any:
         if value is None:
             return None
+        if not isinstance(value, Decimal):
+            raise TypeError(
+                f"money columns take Decimal, got {type(value).__name__}: {value!r}. "
+                "This column type is the last boundary where the no-float rule can "
+                "still be enforced; coercing here would defeat its whole purpose."
+            )
         return value if dialect.name == "postgresql" else str(value)
 
     def process_result_value(self, value: Any, dialect: Dialect) -> Decimal | None:
