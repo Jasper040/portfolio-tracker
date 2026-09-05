@@ -97,6 +97,15 @@ markers = [
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint]
+# Pinned explicitly: ruff's default rule set varies by version, and an unpinned
+# gate that changes under you is worse than no gate. E/F = pycodestyle+pyflakes,
+# I = import order, B = bugbear.
+# FURB is deliberately absent: FURB157 rewrites Decimal("1") to Decimal(1), and in
+# a codebase whose first rule is "money is Decimal, never float", constructing from
+# strings is the habit worth keeping.
+select = ["E", "F", "I", "B"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
@@ -172,6 +181,7 @@ git commit -m "chore: scaffold backend package, settings, and test harness"
 
 ```python
 # backend/tests/unit/test_money.py
+from dataclasses import FrozenInstanceError
 from datetime import date
 from decimal import Decimal
 
@@ -192,11 +202,18 @@ def test_money_refuses_to_add_across_currencies() -> None:
 
 
 def test_fx_converts_by_dividing_degiro_style() -> None:
-    """DeGiro quotes local-per-EUR, so converting divides: -1004.25 / 1.2150."""
+    """DeGiro quotes local-per-EUR, so converting divides: -1004.25 / 1.2150.
+
+    The broker booked -826.55 for this row; exact division gives -826.54. That
+    one-cent gap is the broker's own rounding, and it is precisely why `net_base`
+    is stored as broker truth rather than recomputed from its components.
+    """
     rate = FxRate("USD", "EUR", Decimal("1.2150"), date(2026, 7, 13))
     result = rate.convert(Money(Decimal("-1004.25"), "USD"))
     assert result.currency == "EUR"
-    assert result.amount.quantize(Decimal("0.01")) == Decimal("-1170.88")
+    assert result.amount.quantize(Decimal("0.01")) == Decimal("-826.54")
+    # The broker's own figure differs by exactly one cent: documented, not asserted away.
+    assert abs(result.amount - Decimal("-826.55")) < Decimal("0.02")
 
 
 def test_fx_refuses_wrong_direction() -> None:
@@ -207,8 +224,10 @@ def test_fx_refuses_wrong_direction() -> None:
 
 
 def test_money_is_immutable() -> None:
+    """Frozen, and specifically frozen: a bare `Exception` here would also pass if
+    the assignment raised NameError, so it would assert almost nothing."""
     m = Money(Decimal("1"), "EUR")
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         m.amount = Decimal("2")  # type: ignore[misc]
 ```
 
@@ -334,6 +353,7 @@ import pytest
 
 from app.ingest.degiro.dialect import (
     TRANSACTIONS_HEADER,
+    TRANSACTIONS_RAW_FIELDS,
     TxnCol,
     UnexpectedHeader,
     assert_header,
@@ -356,6 +376,35 @@ from app.ingest.degiro.dialect import (
 )
 def test_parses_dutch_decimals(raw: str, expected: Decimal) -> None:
     assert parse_decimal(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["778.25", "abc", "-", "(1.322,44)", "1.036.50", ".50", "1 036,50", "--1,00"],
+)
+def test_rejects_input_that_is_not_a_dutch_number(raw: str) -> None:
+    """A silent hundredfold error is the worst outcome for a money parser:
+    "778.25" must raise, not quietly become Decimal("103650")."""
+    with pytest.raises(ValueError):
+        parse_decimal(raw)
+
+
+def test_parses_bare_integers() -> None:
+    """Quantities arrive with no decimal part at all."""
+    assert parse_decimal("2") == Decimal("2")
+    assert parse_decimal("-5") == Decimal("-5")
+
+
+def test_raw_fields_is_a_stable_17_column_map() -> None:
+    """TRANSACTIONS_RAW_FIELDS exists to stop a column being silently dropped from
+    raw_json. Nothing else in the suite would catch a reorder, duplicate or deletion."""
+    assert len(TRANSACTIONS_RAW_FIELDS) == 17
+    assert len(set(TRANSACTIONS_RAW_FIELDS)) == 17
+    assert all(name.strip() for name in TRANSACTIONS_RAW_FIELDS)
+    assert TRANSACTIONS_RAW_FIELDS[TxnCol.LOCAL_CCY] == "Local value currency"
+    assert TRANSACTIONS_RAW_FIELDS[TxnCol.VALUE_EUR_CCY] == "Value EUR currency"
+    assert TRANSACTIONS_RAW_FIELDS[TxnCol.TOTAL_EUR] == "Total EUR"
+    assert TRANSACTIONS_RAW_FIELDS[TxnCol.ORDER_ID] == "Order ID"
 
 
 def test_blank_decimal_is_none_not_zero() -> None:
@@ -413,6 +462,7 @@ the export shape these indices were verified against.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -487,11 +537,29 @@ def assert_header(actual: list[str], expected: str, filename: str) -> None:
         )
 
 
+# Optional sign; digits either ungrouped or grouped by "." in threes; optional ","
+# decimal part. Both grouped ("10.623,75") and ungrouped ("778,25") forms occur in
+# real exports, and quantities arrive as bare integers ("2", "-5").
+_DUTCH_NUMBER = re.compile(r"^-?(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d+)?$")
+
+
 def parse_decimal(raw: str) -> Decimal:
-    """Parse a Dutch-locale number: '.' groups thousands, ',' is the decimal point."""
+    """Parse a Dutch-locale number: '.' groups thousands, ',' is the decimal point.
+
+    The shape is validated before the separators are swapped. Without that check an
+    English-formatted cell like "778.25" passes straight through the replacements
+    and returns Decimal("103650") — a hundredfold error, silent, in a money parser.
+    Failing loudly on an unexpected shape is the entire point of this function.
+
+    One ambiguity necessarily remains: "1.036" is read as 1036, the Dutch reading.
+    A file mixing English decimals with Dutch headers could still be misread there,
+    which is what `assert_header` guards against upstream.
+    """
     text = raw.strip()
     if not text:
         raise ValueError("cannot parse an empty string as a decimal")
+    if not _DUTCH_NUMBER.match(text):
+        raise ValueError(f"not a Dutch-formatted number: {raw!r}")
     return Decimal(text.replace(".", "").replace(",", "."))
 
 
@@ -509,7 +577,7 @@ Create empty `backend/app/ingest/__init__.py` and `backend/app/ingest/degiro/__i
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && python -m pytest tests/unit/test_degiro_dialect.py -v`
-Expected: 11 passed
+Expected: 21 passed
 
 - [ ] **Step 5: Commit**
 
@@ -547,6 +615,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlmodel import Session, select
 
 from app.db import create_engine_and_tables
@@ -600,9 +669,56 @@ def test_decimal_round_trips_exactly() -> None:
 
     with Session(engine) as s:
         txn = s.exec(select(Transaction)).one()
-        assert txn.price_local == Decimal("502.1500")
-        assert txn.net_base == Decimal("-883.10")
         assert isinstance(txn.price_local, Decimal)
+        # Value equality would NOT catch a lost scale: Decimal("502.15") equals
+        # Decimal("502.1500"). Pin the representation instead, so a stray
+        # .normalize() or a float round-trip in the read path fails loudly.
+        assert str(txn.price_local) == "502.1500"
+        assert txn.price_local.as_tuple().exponent == -4
+        assert str(txn.net_base) == "-883.10"
+
+
+def test_money_column_rejects_a_float() -> None:
+    """The column type is the last boundary where "money is Decimal, never float"
+    can still be enforced. A float must raise, not be silently coerced."""
+    from sqlalchemy.dialects import sqlite
+
+    from app.models.types import DecimalString
+
+    col = DecimalString()
+    with pytest.raises(TypeError):
+        col.process_bind_param(0.1, sqlite.dialect())  # type: ignore[arg-type]
+    assert col.process_bind_param(Decimal("0.10"), sqlite.dialect()) == "0.10"
+    assert col.process_bind_param(None, sqlite.dialect()) is None
+
+
+def test_orphan_foreign_keys_are_rejected() -> None:
+    """SQLite ignores declared FKs unless the pragma is set. Without it the local
+    suite accepts rows Postgres rejects, so a referential bug — a bad undo ordering,
+    a stale account_id — would only ever appear in production."""
+    from sqlalchemy.exc import IntegrityError
+
+    engine = create_engine_and_tables("sqlite://")
+    with Session(engine) as s:
+        s.add(
+            Transaction(
+                id=uuid4(),
+                account_id=uuid4(),  # no such account
+                import_batch_id=uuid4(),  # no such batch
+                source="degiro",
+                source_ref="orphan",
+                txn_type="BUY",
+                trade_date=date(2026, 1, 1),
+                fee_base=Decimal("0"),
+                tax_base=Decimal("0"),
+                net_base=Decimal("-1"),
+                is_economic=True,
+                closure_reason="DECISION",
+                raw_json="{}",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            s.commit()
 
 
 def test_source_ref_is_unique() -> None:
@@ -647,11 +763,8 @@ def test_source_ref_is_unique() -> None:
         s.add(make("dupe"))
         s.commit()
         s.add(make("dupe"))
-        try:
+        with pytest.raises(IntegrityError):
             s.commit()
-        except IntegrityError:
-            return
-    raise AssertionError("duplicate source_ref was accepted")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -691,6 +804,12 @@ class DecimalString(TypeDecorator[Decimal]):
     def process_bind_param(self, value: Decimal | None, dialect: Dialect) -> Any:
         if value is None:
             return None
+        if not isinstance(value, Decimal):
+            raise TypeError(
+                f"money columns take Decimal, got {type(value).__name__}: {value!r}. "
+                "This column type is the last boundary where the no-float rule can "
+                "still be enforced; coercing here would defeat its whole purpose."
+            )
         return value if dialect.name == "postgresql" else str(value)
 
     def process_result_value(self, value: Any, dialect: Dialect) -> Decimal | None:
@@ -802,16 +921,41 @@ read them as omissions:**
 
 from __future__ import annotations
 
-from sqlalchemy import Engine
-from sqlmodel import SQLModel, create_engine
+from typing import Any
+
+from sqlalchemy import Engine, event
+from sqlmodel import Session, SQLModel, create_engine
 
 import app.models.ledger  # noqa: F401  - registers tables on SQLModel.metadata
 
 
 def create_engine_and_tables(database_url: str) -> Engine:
     engine = create_engine(database_url, echo=False)
+    if engine.dialect.name == "sqlite":
+        _enforce_sqlite_foreign_keys(engine)
     SQLModel.metadata.create_all(engine)
     return engine
+
+
+def get_session(engine: Engine) -> Session:
+    return Session(engine)
+
+
+def _enforce_sqlite_foreign_keys(engine: Engine) -> None:
+    """SQLite ignores declared foreign keys unless explicitly asked not to.
+
+    Without this the local database accepts rows Postgres would reject — an orphan
+    transaction pointing at a deleted import_batch, say — so the suite would be
+    validating weaker semantics than the deployment target, and a referential bug
+    would surface only in production. The schema is portable; the enforcement has
+    to be too.
+    """
+
+    @event.listens_for(engine, "connect")
+    def _set_pragma(dbapi_connection: Any, _record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 ```
 
 Create empty `backend/app/models/__init__.py`.
@@ -884,6 +1028,24 @@ def test_refs_are_stable_when_the_export_reorders_rows() -> None:
         assert set(assign_source_refs(shuffled)) == baseline
 
 
+def test_delimiter_in_a_field_cannot_forge_another_rows_ref() -> None:
+    """A plain "|".join is not injective: ("X|Y", "T", ...) and ("X", "Y|T", ...)
+    would produce the same payload and so the same ref, silently merging two distinct
+    trades. Fields are raw CSV cell values; nothing guarantees they are delimiter-free."""
+    a = RefInput(order_ref="X|Y", trade_datetime="T", isin="I", quantity="1", price="1")
+    b = RefInput(order_ref="X", trade_datetime="Y|T", isin="I", quantity="1", price="1")
+    refs = assign_source_refs([a, b])
+    assert refs[0] != refs[1]
+
+
+def test_ordinals_extend_past_a_pair() -> None:
+    """Ordinal assignment must keep working for a duplicate group larger than two."""
+    row = RefInput(
+        order_ref="O", trade_datetime="T", isin="I", quantity="-5", price="1,00"
+    )
+    assert len(set(assign_source_refs([row] * 5))) == 5
+
+
 def test_different_prices_give_different_refs() -> None:
     rows = [_row("C1", "-5", "145.3000"), _row("C1", "-5", "145.3050")]
     assert len(set(assign_source_refs(rows))) == 2
@@ -947,9 +1109,26 @@ def assign_source_refs(inputs: Sequence[RefInput]) -> list[str]:
         row = inputs[i]
         ordinal = seen[row]
         seen[row] += 1
-        payload = "|".join([*astuple(row), str(ordinal)])
-        refs[i] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        refs[i] = hashlib.sha256(_payload(row, ordinal).encode("utf-8")).hexdigest()
     return refs
+
+
+def _payload(row: RefInput, ordinal: int) -> str:
+    """Length-prefix every field so the encoding is injective.
+
+    A plain "|".join is not. RefInput(order_ref="X|Y", trade_datetime="T", ...) and
+    RefInput(order_ref="X", trade_datetime="Y|T", ...) both join to "X|Y|T|...", so
+    two distinct trades hash identically and one silently vanishes from the ledger.
+    These are raw CSV cell values — nothing upstream guarantees they contain no
+    delimiter — and a second source (SnapTrade) will feed this same key later.
+
+    Length prefixes make the encoding unambiguous even when a field itself looks
+    like one: "3:xy" encodes as "4:3:xy", which can only be read back one way.
+
+    This format is effectively persistent schema. Changing it changes every ref, so
+    an existing ledger would have to be rebuilt rather than re-imported.
+    """
+    return "".join(f"{len(field)}:{field}" for field in (*astuple(row), str(ordinal)))
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1011,8 +1190,8 @@ from pathlib import Path
 
 import pytest
 
-from app.ingest.degiro.dialect import UnexpectedHeader
-from app.ingest.degiro.transactions_csv import parse_transactions_csv
+from app.ingest.degiro.dialect import TRANSACTIONS_HEADER, UnexpectedHeader
+from app.ingest.degiro.transactions_csv import MalformedRow, parse_transactions_csv
 
 GOLDEN = Path(__file__).parents[1] / "golden" / "degiro_transactions_golden.csv"
 
@@ -1091,6 +1270,40 @@ def test_raw_row_keeps_every_column_including_the_unnamed_ones(rows: list) -> No
     assert row.raw["Value EUR currency"] == "AUD"
     assert row.raw["Local value"] == "-50,00"
     assert row.raw["Value EUR"] == "-30,30"
+
+
+def test_column_mapping_is_pinned_for_local_and_base_values(rows: list) -> None:
+    """A transposed LOCAL_VALUE/VALUE_EUR index would pass every other test here: the
+    broker-truth test asserts only an inequality, which survives a swap. Positional
+    correctness is this parser's entire reason to exist, so pin it to real values."""
+    aud = next(r for r in rows if r.isin == "AU0000000001")
+    assert aud.gross_local == Decimal("-50.00")  # Local value, in AUD
+    assert aud.value_base == Decimal("-30.30")  # Value EUR
+    assert aud.net_base == Decimal("-32.38")  # Total EUR
+
+
+def test_a_short_row_reports_its_line_number(tmp_path: Path) -> None:
+    """A bare IndexError across 112 rows of 17 columns locates nothing."""
+    bad = tmp_path / "short.csv"
+    bad.write_text(TRANSACTIONS_HEADER + "
+06-01-2025,09:00,X
+", encoding="utf-8")
+    with pytest.raises(MalformedRow) as exc:
+        parse_transactions_csv(bad)
+    assert "line 2" in str(exc.value)
+
+
+def test_a_malformed_number_reports_its_line_number(tmp_path: Path) -> None:
+    lines = GOLDEN.read_text(encoding="utf-8").strip().split("
+")
+    lines[1] = lines[1].replace('"10,0000"', '"10.0000"')  # English decimal
+    bad = tmp_path / "badnum.csv"
+    bad.write_text("
+".join(lines) + "
+", encoding="utf-8")
+    with pytest.raises(MalformedRow) as exc:
+        parse_transactions_csv(bad)
+    assert "line 2" in str(exc.value)
 
 
 def test_rejects_a_file_whose_header_changed(tmp_path: Path) -> None:
@@ -1183,13 +1396,28 @@ PARSER_VERSION = "degiro-transactions-1"
 SOURCE = "degiro"
 
 
+class MalformedRow(Exception):
+    """A row could not be parsed. Carries the file and line so it can be found.
+
+    With 112 rows of 17 columns, an error that does not say *where* it failed turns
+    a two-minute fix into a bisect.
+    """
+
+
 def parse_transactions_csv(path: Path) -> list[NormalisedRow]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
         header = next(reader)
         assert_header(header, TRANSACTIONS_HEADER, path.name)
-        raw_rows = [row for row in reader if any(cell.strip() for cell in row)]
+        # Keep the physical line number: blank-row filtering makes a later enumerate()
+        # disagree with the file, and a parse error must name the line you can go read.
+        numbered = [
+            (line_no, row)
+            for line_no, row in enumerate(reader, start=2)
+            if any(cell.strip() for cell in row)
+        ]
 
+    raw_rows = [row for _, row in numbered]
     ref_inputs = [
         RefInput(
             order_ref=row[TxnCol.ORDER_ID].strip(),
@@ -1202,10 +1430,20 @@ def parse_transactions_csv(path: Path) -> list[NormalisedRow]:
     ]
     refs = assign_source_refs(ref_inputs)
 
-    return [_to_normalised(row, ref) for row, ref in zip(raw_rows, refs, strict=True)]
+    parsed: list[NormalisedRow] = []
+    for (line_no, row), ref in zip(numbered, refs, strict=True):
+        try:
+            parsed.append(_to_normalised(row, ref))
+        except (ValueError, IndexError) as exc:
+            raise MalformedRow(f"{path.name} line {line_no}: {exc}") from exc
+    return parsed
 
 
 def _to_normalised(row: list[str], source_ref: str) -> NormalisedRow:
+    if len(row) != len(TRANSACTIONS_RAW_FIELDS):
+        raise ValueError(
+            f"expected {len(TRANSACTIONS_RAW_FIELDS)} columns, got {len(row)}"
+        )
     quantity = parse_decimal(row[TxnCol.QUANTITY])
     order_ref = row[TxnCol.ORDER_ID].strip() or None
 
@@ -1255,7 +1493,7 @@ from app.ingest.degiro.dialect import (
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && python -m pytest tests/unit/test_transactions_parser.py -v`
-Expected: 12 passed
+Expected: 15 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1288,12 +1526,15 @@ git commit -m "feat: Transactions.csv parser with golden fixture reproducing exp
 ```python
 # backend/tests/integration/test_importer.py
 from pathlib import Path
+from uuid import uuid4
 
+import pytest
 from sqlmodel import Session, select
 
 from app.db import create_engine_and_tables
+from app.ingest.degiro.transactions_csv import MalformedRow
 from app.ingest.importer import ensure_default_account, import_transactions_file, undo_batch
-from app.models.ledger import ImportBatch, Transaction
+from app.models.ledger import Account, ImportBatch, Transaction
 
 GOLDEN = Path(__file__).parents[1] / "golden" / "degiro_transactions_golden.csv"
 
@@ -1346,6 +1587,46 @@ def test_undo_removes_exactly_one_batch() -> None:
     with Session(engine) as s:
         assert s.exec(select(Transaction)).all() == []
         assert s.exec(select(ImportBatch)).all() == []
+
+
+def test_a_malformed_file_aborts_the_import_leaving_nothing_behind(tmp_path: Path) -> None:
+    """Atomicity here is structural: parsing finishes before any Session is opened, so
+    a bad row means the database is never touched. Nothing enforced that, though — a
+    refactor moving the parse inside the session would allow a half-import with a
+    committed batch row, and no existing test would notice. This locks it in."""
+    engine = _engine()
+    account_id = ensure_default_account(engine)
+
+    lines = GOLDEN.read_text(encoding="utf-8").strip().split("
+")
+    lines[5] = "06-01-2025,09:00,TRUNCATED"  # 3 columns where 17 are required
+    bad = tmp_path / "malformed.csv"
+    bad.write_text("
+".join(lines) + "
+", encoding="utf-8")
+
+    with pytest.raises(MalformedRow):
+        import_transactions_file(engine, bad, account_id)
+
+    with Session(engine) as s:
+        assert s.exec(select(Transaction)).all() == []
+        assert s.exec(select(ImportBatch)).all() == []
+
+
+def test_undo_of_an_unknown_batch_is_a_no_op() -> None:
+    engine = _engine()
+    ensure_default_account(engine)
+    assert undo_batch(engine, uuid4()) == 0
+
+
+def test_ensure_default_account_is_idempotent() -> None:
+    """It runs on every import, so a second call must not create a second account."""
+    engine = _engine()
+    first = ensure_default_account(engine)
+    second = ensure_default_account(engine)
+    assert first == second
+    with Session(engine) as s:
+        assert len(s.exec(select(Account)).all()) == 1
 
 
 def test_batch_records_the_file_hash() -> None:
@@ -1626,9 +1907,12 @@ def _client() -> TestClient:
 
 
 def test_lists_transactions_newest_first() -> None:
-    body = _client().get("/api/transactions").json()
+    """Assert the whole sequence, not just its endpoints: a broken secondary sort key
+    leaves the first and last rows correct while scrambling everything between them."""
+    body = _client().get("/api/transactions", params={"limit": 1000}).json()
+    dates = [r["trade_date"] for r in body["items"]]
+    assert dates == sorted(dates, reverse=True)
     assert body["total"] == 13
-    assert body["items"][0]["trade_date"] >= body["items"][-1]["trade_date"]
 
 
 def test_money_is_serialised_as_a_string_not_a_float() -> None:
@@ -1653,6 +1937,26 @@ def test_paginates() -> None:
     body = _client().get("/api/transactions", params={"limit": 5, "offset": 0}).json()
     assert len(body["items"]) == 5
     assert body["total"] == 13
+
+
+def test_paging_covers_every_row_exactly_once() -> None:
+    """The real pagination risk is a non-total ordering: rows tying on the sort key can
+    come back in a different order per request, so a page boundary silently skips one
+    row and repeats another. Only walking the pages and comparing against a single full
+    fetch detects that -- asserting one page's length never will."""
+    client = _client()
+    whole = client.get("/api/transactions", params={"limit": 1000}).json()
+    expected = [r["id"] for r in whole["items"]]
+
+    paged: list[str] = []
+    for offset in range(0, whole["total"], 5):
+        page = client.get(
+            "/api/transactions", params={"limit": 5, "offset": offset}
+        ).json()
+        paged.extend(r["id"] for r in page["items"])
+
+    assert paged == expected
+    assert len(set(paged)) == len(paged)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1772,8 +2076,12 @@ def list_transactions(
 ) -> TransactionPage:
     with Session(engine) as session:
         count_stmt = select(func.count()).select_from(Transaction)
+        # Ordering must be a TOTAL order or offset/limit can skip or repeat a row at a
+        # page boundary. trade_date is not unique across rows, and source_ref is only
+        # unique per source -- the DB constraint is UNIQUE(source, source_ref), and a
+        # second source (SnapTrade) is a planned milestone. The primary key settles it.
         page_stmt = select(Transaction).order_by(
-            Transaction.trade_date.desc(), Transaction.source_ref
+            Transaction.trade_date.desc(), Transaction.source_ref, Transaction.id
         )
         if isin:
             count_stmt = count_stmt.where(Transaction.isin == isin)
