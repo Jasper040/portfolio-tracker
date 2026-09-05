@@ -2,6 +2,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from sqlmodel import Session, select
 
 from app.db import create_engine_and_tables, get_session
@@ -122,3 +123,32 @@ def test_source_ref_is_unique() -> None:
         except IntegrityError:
             return
     raise AssertionError("duplicate source_ref was accepted")
+
+
+def test_orphan_foreign_keys_are_rejected() -> None:
+    """SQLite ignores declared FKs unless the pragma is set. Without it the local
+    suite accepts rows Postgres rejects, so a referential bug — a bad undo ordering,
+    a stale account_id — would only ever appear in production."""
+    from sqlalchemy.exc import IntegrityError
+
+    engine = create_engine_and_tables("sqlite://")
+    with Session(engine) as s:
+        s.add(
+            Transaction(
+                id=uuid4(),
+                account_id=uuid4(),  # no such account
+                import_batch_id=uuid4(),  # no such batch
+                source="degiro",
+                source_ref="orphan",
+                txn_type="BUY",
+                trade_date=date(2026, 1, 1),
+                fee_base=Decimal("0"),
+                tax_base=Decimal("0"),
+                net_base=Decimal("-1"),
+                is_economic=True,
+                closure_reason="DECISION",
+                raw_json="{}",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            s.commit()
