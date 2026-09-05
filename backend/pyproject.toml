@@ -17,6 +17,10 @@ dev = ["pytest>=8.3", "httpx>=0.28", "ruff>=0.8", "mypy>=1.13"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# realdata is a separate, opt-in suite (design doc Sec 11.1): a plain `pytest` run
+# must not depend on whether the owner's gitignored real exports happen to be
+# present on disk. Run it explicitly with `pytest -m realdata`.
+addopts = ["-m", "not realdata"]
 markers = [
     "realdata: runs against the owner's real DeGiro exports; skipped unless they exist",
 ]
