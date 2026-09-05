@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -50,6 +51,23 @@ def test_identical_fill_rows_both_survive_import() -> None:
             )
         ).all()
     assert len(fills) == 2
+
+
+def test_trade_time_and_autofx_fee_survive_the_round_trip() -> None:
+    """Both are parsed but easy to drop on the way into the ledger: trade_time
+    only fed the dedupe key, and autofx_fee_base is a real per-row cost that
+    net_base (broker truth) already absorbs, so nothing else forces it to persist."""
+    engine = _engine()
+    account_id = ensure_default_account(engine)
+    import_transactions_file(engine, GOLDEN, account_id)
+    with Session(engine) as s:
+        txn = s.exec(
+            select(Transaction).where(
+                Transaction.order_ref == "aaaa0002-0000-0000-0000-000000000002"
+            )
+        ).one()
+    assert txn.trade_time == "10:30"
+    assert txn.autofx_fee_base == Decimal("-0.23")
 
 
 def test_undo_removes_exactly_one_batch() -> None:

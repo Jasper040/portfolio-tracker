@@ -100,6 +100,7 @@ def _to_normalised(row: list[str], source_ref: str) -> NormalisedRow:
         source_ref=source_ref,
         txn_type="BUY" if quantity > 0 else "SELL",
         trade_date=parse_dutch_date(row[TxnCol.DATE]),
+        trade_time=row[TxnCol.TIME].strip() or None,
         isin=row[TxnCol.ISIN].strip() or None,
         product_name=row[TxnCol.PRODUCT].strip() or None,
         quantity=quantity,

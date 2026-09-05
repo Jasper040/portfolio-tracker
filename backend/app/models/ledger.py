@@ -59,6 +59,11 @@ class Transaction(SQLModel, table=True):
 
     txn_type: str = Field(index=True)
     trade_date: date = Field(index=True)
+    # The raw "HH:MM" cell, deliberately a string rather than a datetime: DeGiro
+    # never states a timezone, and inventing one would fabricate a fact in a
+    # ledger built on broker truth. Combined with trade_date and isin, this is
+    # what M1 groups fill rows into economic orders on (design doc Sec 6.4).
+    trade_time: str | None = None
     settle_date: date | None = None
 
     isin: str | None = Field(default=None, index=True)
@@ -71,6 +76,10 @@ class Transaction(SQLModel, table=True):
 
     fee_base: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
     tax_base: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    # A real per-row cost DeGiro charges on foreign-currency fills. `net_base` (broker
+    # truth) already reflects it, so cash is correct without this column; it is stored
+    # so M1's per-lot cost attribution does not have to re-parse raw_json to find it.
+    autofx_fee_base: Decimal | None = Field(default=None, sa_column=Column(DecimalString()))
     gross_local: Decimal | None = Field(default=None, sa_column=Column(DecimalString()))
     net_base: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
 

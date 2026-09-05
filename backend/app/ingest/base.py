@@ -18,6 +18,14 @@ class NormalisedRow:
     tax_base: Decimal
     raw: dict[str, str]
     settle_date: date | None = None
+    # The raw "HH:MM" cell, kept as a string rather than combined into a datetime.
+    # DeGiro does not state a timezone anywhere in the export; inventing one to
+    # build a timezone-aware (or even naive-but-implied) datetime would be a
+    # fabricated fact in a schema whose whole discipline is broker truth. M1 needs
+    # this to group fill rows into economic orders on (order_ref, trade_datetime,
+    # isin) -- see design doc Sec 6.4 -- but grouping only needs equality, not
+    # arithmetic, so the raw string is enough.
+    trade_time: str | None = None
     isin: str | None = None
     product_name: str | None = None
     quantity: Decimal | None = None
