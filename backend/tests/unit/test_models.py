@@ -4,8 +4,23 @@ from uuid import uuid4
 
 from sqlmodel import Session, select
 
-from app.db import create_engine_and_tables
+from app.db import create_engine_and_tables, get_session
 from app.models.ledger import Account, ImportBatch, Transaction
+
+
+def test_get_session_returns_working_session() -> None:
+    """get_session is a declared interface (see brief); later tasks import it."""
+    engine = create_engine_and_tables("sqlite://")
+    account_id = uuid4()
+    with get_session(engine) as s:
+        assert isinstance(s, Session)
+        s.add(Account(id=account_id, broker="degiro", name="Main", base_currency="EUR"))
+        s.commit()
+
+    with get_session(engine) as s:
+        account = s.get(Account, account_id)
+        assert account is not None
+        assert account.broker == "degiro"
 
 
 def test_decimal_round_trips_exactly() -> None:
