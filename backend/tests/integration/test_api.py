@@ -18,9 +18,12 @@ def _client() -> TestClient:
 
 
 def test_lists_transactions_newest_first() -> None:
-    body = _client().get("/api/transactions").json()
+    """Assert the whole sequence, not just its endpoints: a broken secondary sort key
+    leaves the first and last rows correct while scrambling everything between them."""
+    body = _client().get("/api/transactions", params={"limit": 1000}).json()
+    dates = [r["trade_date"] for r in body["items"]]
+    assert dates == sorted(dates, reverse=True)
     assert body["total"] == 13
-    assert body["items"][0]["trade_date"] >= body["items"][-1]["trade_date"]
 
 
 def test_money_is_serialised_as_a_string_not_a_float() -> None:
@@ -45,3 +48,23 @@ def test_paginates() -> None:
     body = _client().get("/api/transactions", params={"limit": 5, "offset": 0}).json()
     assert len(body["items"]) == 5
     assert body["total"] == 13
+
+
+def test_paging_covers_every_row_exactly_once() -> None:
+    """The real pagination risk is a non-total ordering: rows tying on the sort key can
+    come back in a different order per request, so a page boundary silently skips one
+    row and repeats another. Only walking the pages and comparing against a single full
+    fetch detects that -- asserting one page's length never will."""
+    client = _client()
+    whole = client.get("/api/transactions", params={"limit": 1000}).json()
+    expected = [r["id"] for r in whole["items"]]
+
+    paged: list[str] = []
+    for offset in range(0, whole["total"], 5):
+        page = client.get(
+            "/api/transactions", params={"limit": 5, "offset": offset}
+        ).json()
+        paged.extend(r["id"] for r in page["items"])
+
+    assert paged == expected
+    assert len(set(paged)) == len(paged)

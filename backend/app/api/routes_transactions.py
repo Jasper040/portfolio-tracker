@@ -34,9 +34,14 @@ def list_transactions(
 ) -> TransactionPage:
     with Session(engine) as session:
         count_stmt = select(func.count()).select_from(Transaction)
+        # Ordering must be a TOTAL order or offset/limit can skip or repeat a row at a
+        # page boundary. trade_date is not unique across rows, and source_ref is only
+        # unique per source -- the DB constraint is UNIQUE(source, source_ref), and a
+        # second source (SnapTrade) is a planned milestone. The primary key settles it.
         page_stmt = select(Transaction).order_by(
             Transaction.trade_date.desc(),  # type: ignore[attr-defined]
             Transaction.source_ref,
+            Transaction.id,  # type: ignore[arg-type]
         )
         if isin:
             count_stmt = count_stmt.where(Transaction.isin == isin)
