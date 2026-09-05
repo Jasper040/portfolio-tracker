@@ -1,3 +1,4 @@
+import random
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -34,6 +35,29 @@ def test_reimporting_the_same_file_changes_nothing() -> None:
     account_id = ensure_default_account(engine)
     import_transactions_file(engine, GOLDEN, account_id)
     second = import_transactions_file(engine, GOLDEN, account_id)
+    assert second.rows_inserted == 0
+    assert second.rows_skipped == 13
+    with Session(engine) as s:
+        assert len(s.exec(select(Transaction)).all()) == 13
+
+
+def test_reimporting_a_reordered_export_inserts_nothing(tmp_path: Path) -> None:
+    """The milestone's headline promise: a re-export with rows in a different order
+    re-imports as zero rows. `assign_source_refs` proves this at the unit level
+    already; this proves it end to end, through the importer and the database."""
+    engine = _engine()
+    account_id = ensure_default_account(engine)
+    first = import_transactions_file(engine, GOLDEN, account_id)
+    assert first.rows_inserted == 13
+
+    lines = GOLDEN.read_text(encoding="utf-8").strip().split("\n")
+    header, data_lines = lines[0], lines[1:]
+    shuffled = list(data_lines)
+    random.Random(0).shuffle(shuffled)
+    reordered = tmp_path / "reordered.csv"
+    reordered.write_text("\n".join([header, *shuffled]) + "\n", encoding="utf-8")
+
+    second = import_transactions_file(engine, reordered, account_id)
     assert second.rows_inserted == 0
     assert second.rows_skipped == 13
     with Session(engine) as s:
