@@ -1,0 +1,30 @@
+[project]
+name = "portfolio-tracker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlmodel>=0.0.22",
+    "pydantic-settings>=2.6",
+    "typer>=0.15",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "httpx>=0.28", "ruff>=0.8", "mypy>=1.13"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+    "realdata: runs against the owner's real DeGiro exports; skipped unless they exist",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
