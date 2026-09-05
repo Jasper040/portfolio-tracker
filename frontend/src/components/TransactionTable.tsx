@@ -10,6 +10,12 @@ interface Props {
  *  without re-opening the export. */
 function Row({ txn }: { txn: Transaction }) {
   const [open, setOpen] = useState(false);
+  // A Fragment (<>...</>), not a <div>: this component renders two sibling <tr>s
+  // (the row, and the optional raw-data row below it), but a <tbody> in HTML may
+  // only contain <tr> elements directly. Any wrapping element here -- even one
+  // React renders correctly -- would be invalid table markup and browsers silently
+  // hoist the <tr>s out of it, which is a much stranger bug to track down than
+  // just not wrapping them in the first place.
   return (
     <>
       <tr>
