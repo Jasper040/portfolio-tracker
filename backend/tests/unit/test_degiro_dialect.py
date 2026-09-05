@@ -53,10 +53,12 @@ def test_header_guard_rejects_a_changed_header() -> None:
 
 
 def test_column_indices_match_the_data_not_the_header() -> None:
-    """Header says index 8 is unnamed; the data puts the local currency there."""
+    """Header says indices 8 and 10 are unnamed; the data assigns a currency to
+    each of the two amounts that precede them (Price, Local value)."""
     assert TxnCol.PRICE == 7
-    assert TxnCol.LOCAL_CCY == 8
+    assert TxnCol.PRICE_CCY == 8
     assert TxnCol.LOCAL_VALUE == 9
+    assert TxnCol.LOCAL_CCY == 10
     assert TxnCol.VALUE_EUR == 11
     assert TxnCol.TOTAL_EUR == 15
     assert TxnCol.ORDER_ID == 16
@@ -85,7 +87,7 @@ def test_raw_fields_is_a_stable_17_column_map() -> None:
     assert len(TRANSACTIONS_RAW_FIELDS) == 17
     assert len(set(TRANSACTIONS_RAW_FIELDS)) == 17
     assert all(name.strip() for name in TRANSACTIONS_RAW_FIELDS)
+    assert TRANSACTIONS_RAW_FIELDS[TxnCol.PRICE_CCY] == "Price currency"
     assert TRANSACTIONS_RAW_FIELDS[TxnCol.LOCAL_CCY] == "Local value currency"
-    assert TRANSACTIONS_RAW_FIELDS[TxnCol.VALUE_EUR_CCY] == "Value EUR currency"
     assert TRANSACTIONS_RAW_FIELDS[TxnCol.TOTAL_EUR] == "Total EUR"
     assert TRANSACTIONS_RAW_FIELDS[TxnCol.ORDER_ID] == "Order ID"

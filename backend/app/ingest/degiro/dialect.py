@@ -32,9 +32,13 @@ ACCOUNT_HEADER = "Date,Time,Value date,Product,ISIN,Description,FX,Change,,Balan
 PORTFOLIO_HEADER = "Product,Symbol/ISIN,Amount,Closing,Local value,,Value in EUR"
 
 # The header's two blank names would collide as dict keys and silently drop a column
-# from `raw_json`. These are the same fields in the same order, with the unnamed
-# currency columns given the names the data actually puts there.
-TRANSACTIONS_RAW_FIELDS = [
+# from `raw_json`. These are the same fields in the same order. Each unnamed currency
+# column is named for the amount it follows -- "Price currency" follows "Price" at
+# index 7, "Local value currency" follows "Local value" at index 9 -- matching the
+# verified positional layout (design doc Sec 3.1: 8 price_ccy, 9 local_value,
+# 10 local_ccy, 11 value_eur). A tuple, not a list: this is module-level shared state
+# acting as a schema, not a mutable collection.
+TRANSACTIONS_RAW_FIELDS: tuple[str, ...] = (
     "Date",
     "Time",
     "Product",
@@ -43,16 +47,16 @@ TRANSACTIONS_RAW_FIELDS = [
     "Venue",
     "Quantity",
     "Price",
-    "Local value currency",
+    "Price currency",
     "Local value",
-    "Value EUR currency",
+    "Local value currency",
     "Value EUR",
     "Exchange rate",
     "AutoFX Fee",
     "Transaction and/or third party fees EUR",
     "Total EUR",
     "Order ID",
-]
+)
 
 
 class TxnCol:
@@ -66,9 +70,9 @@ class TxnCol:
     VENUE = 5
     QUANTITY = 6
     PRICE = 7
-    LOCAL_CCY = 8
+    PRICE_CCY = 8
     LOCAL_VALUE = 9
-    VALUE_EUR_CCY = 10
+    LOCAL_CCY = 10
     VALUE_EUR = 11
     FX_RATE = 12
     AUTOFX_FEE = 13

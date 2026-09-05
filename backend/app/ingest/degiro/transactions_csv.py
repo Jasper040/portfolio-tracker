@@ -104,7 +104,7 @@ def _to_normalised(row: list[str], source_ref: str) -> NormalisedRow:
         product_name=row[TxnCol.PRODUCT].strip() or None,
         quantity=quantity,
         price_local=parse_decimal(row[TxnCol.PRICE]),
-        currency_local=row[TxnCol.LOCAL_CCY].strip() or None,
+        currency_local=row[TxnCol.PRICE_CCY].strip() or None,
         fx_rate=parse_optional_decimal(row[TxnCol.FX_RATE]),
         gross_local=parse_optional_decimal(row[TxnCol.LOCAL_VALUE]),
         value_base=parse_optional_decimal(row[TxnCol.VALUE_EUR]),

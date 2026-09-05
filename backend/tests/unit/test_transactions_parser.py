@@ -79,8 +79,8 @@ def test_raw_row_keeps_every_column_including_the_unnamed_ones(rows: list) -> No
     to catch. Both currency columns must survive under distinct names."""
     row = next(r for r in rows if r.isin == "AU0000000001")
     assert len(row.raw) == 17
+    assert row.raw["Price currency"] == "AUD"
     assert row.raw["Local value currency"] == "AUD"
-    assert row.raw["Value EUR currency"] == "AUD"
     assert row.raw["Local value"] == "-50,00"
     assert row.raw["Value EUR"] == "-30,30"
 
