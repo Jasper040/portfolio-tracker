@@ -37,3 +37,6 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# SDD scratch workspace (git-ignored)
+.superpowers/

@@ -192,7 +192,7 @@ def test_money_refuses_to_add_across_currencies() -> None:
 
 
 def test_fx_converts_by_dividing_degiro_style() -> None:
-    """DeGiro quotes local-per-EUR. USD -1004.25 at 1.2150 is EUR -1171.things."""
+    """DeGiro quotes local-per-EUR, so converting divides: -1004.25 / 1.2150."""
     rate = FxRate("USD", "EUR", Decimal("1.2150"), date(2026, 7, 13))
     result = rate.convert(Money(Decimal("-1004.25"), "USD"))
     assert result.currency == "EUR"
@@ -975,7 +975,7 @@ git commit -m "feat: deterministic source_ref stable under reordering, distinct 
 - Test: `backend/tests/unit/test_transactions_parser.py`
 
 **Interfaces:**
-- Consumes: `Money`/`FxRate` (Task 2), dialect (Task 3), `RefInput`/`assign_source_refs` (Task 5).
+- Consumes: dialect (Task 3), `RefInput`/`assign_source_refs` (Task 5). **Not** `Money`/`FxRate`: the parser stores the broker's raw Decimals verbatim; conversion happens in M1/M2, so importing them here would be unused indirection.
 - Produces:
   - `NormalisedRow` — frozen dataclass with fields: `source`, `source_ref`, `txn_type`, `trade_date`, `settle_date`, `isin`, `product_name`, `quantity`, `price_local`, `currency_local`, `fx_rate`, `fee_base`, `tax_base`, `gross_local`, `net_base`, `order_ref`, `is_economic`, `closure_reason`, `raw`.
   - `parse_transactions_csv(path: Path) -> list[NormalisedRow]`.
@@ -1738,7 +1738,7 @@ class TransactionPage(BaseModel):
 # backend/app/api/routes_transactions.py
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import Engine, func
 from sqlmodel import Session, select
 
@@ -1748,8 +1748,14 @@ from app.models.ledger import Transaction
 router = APIRouter(prefix="/api", tags=["transactions"])
 
 
-def get_engine() -> Engine:  # overridden in create_app
-    raise NotImplementedError
+def get_engine(request: Request) -> Engine:
+    """The engine is wired onto app.state at construction time.
+
+    Deliberately not `dependency_overrides`: that is FastAPI's test-seam and using
+    it for production wiring leaves no seam left for tests to use.
+    """
+    engine: Engine = request.app.state.engine
+    return engine
 
 
 @router.get("/health")
@@ -1805,8 +1811,7 @@ def create_app(engine: Engine | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    resolved = engine or create_engine_and_tables(get_settings().database_url)
-    app.dependency_overrides[routes_transactions.get_engine] = lambda: resolved
+    app.state.engine = engine or create_engine_and_tables(get_settings().database_url)
     app.include_router(routes_transactions.router)
     return app
 ```
