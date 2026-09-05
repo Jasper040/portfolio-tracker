@@ -1,4 +1,5 @@
 import pytest
+
 from app.settings import Settings
 
 
