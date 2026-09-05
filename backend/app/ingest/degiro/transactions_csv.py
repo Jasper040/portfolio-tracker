@@ -76,17 +76,17 @@ def parse_transactions_csv(path: Path) -> list[NormalisedRow]:
     for (line_no, row), ref in zip(numbered, refs, strict=True):
         try:
             parsed.append(_to_normalised(row, ref))
-        except (ValueError, IndexError) as exc:
+        except ValueError as exc:
             raise MalformedRow(f"{path.name} line {line_no}: {exc}") from exc
     return parsed
 
 
 def _to_normalised(row: list[str], source_ref: str) -> NormalisedRow:
-    if len(row) != len(TRANSACTIONS_RAW_FIELDS):
-        raise ValueError(
-            f"expected {len(TRANSACTIONS_RAW_FIELDS)} columns, got {len(row)}"
-        )
-
+    # No width check here: the loop in parse_transactions_csv already enforces it
+    # for every row before ref_inputs is built, and it must stay upstream of that
+    # point (see the comment there). A second check here would be a dead second
+    # mechanism enforcing the same rule -- and an IndexError from a short row could
+    # never reach this function to begin with.
     quantity = parse_decimal(row[TxnCol.QUANTITY])
     order_ref = row[TxnCol.ORDER_ID].strip() or None
 
