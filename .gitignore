@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# Personal financial data. NEVER commit. See docs/methodology.md "Test data".
+# Real broker exports stay local; CI runs against tests/golden/ synthetic files.
+# ---------------------------------------------------------------------------
+degiro-export/
+*.degiro.csv
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.token
+.snaptrade/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
