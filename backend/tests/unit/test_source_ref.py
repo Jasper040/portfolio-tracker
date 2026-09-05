@@ -45,3 +45,21 @@ def test_blank_order_ref_still_yields_a_ref() -> None:
     rows = [_row("", "100", "1.00"), _row("", "-10", "10.00")]
     refs = assign_source_refs(rows)
     assert all(refs) and len(set(refs)) == 2
+
+
+def test_delimiter_in_a_field_cannot_forge_another_rows_ref() -> None:
+    """A plain "|".join is not injective: ("X|Y", "T", ...) and ("X", "Y|T", ...)
+    would produce the same payload and so the same ref, silently merging two distinct
+    trades. Fields are raw CSV cell values; nothing guarantees they are delimiter-free."""
+    a = RefInput(order_ref="X|Y", trade_datetime="T", isin="I", quantity="1", price="1")
+    b = RefInput(order_ref="X", trade_datetime="Y|T", isin="I", quantity="1", price="1")
+    refs = assign_source_refs([a, b])
+    assert refs[0] != refs[1]
+
+
+def test_ordinals_extend_past_a_pair() -> None:
+    """Ordinal assignment must keep working for a duplicate group larger than two."""
+    row = RefInput(
+        order_ref="O", trade_datetime="T", isin="I", quantity="-5", price="1,00"
+    )
+    assert len(set(assign_source_refs([row] * 5))) == 5

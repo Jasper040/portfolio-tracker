@@ -41,6 +41,23 @@ def assign_source_refs(inputs: Sequence[RefInput]) -> list[str]:
         row = inputs[i]
         ordinal = seen[row]
         seen[row] += 1
-        payload = "|".join([*astuple(row), str(ordinal)])
-        refs[i] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        refs[i] = hashlib.sha256(_payload(row, ordinal).encode("utf-8")).hexdigest()
     return refs
+
+
+def _payload(row: RefInput, ordinal: int) -> str:
+    """Length-prefix every field so the encoding is injective.
+
+    A plain "|".join is not. RefInput(order_ref="X|Y", trade_datetime="T", ...) and
+    RefInput(order_ref="X", trade_datetime="Y|T", ...) both join to "X|Y|T|...", so
+    two distinct trades hash identically and one silently vanishes from the ledger.
+    These are raw CSV cell values — nothing upstream guarantees they contain no
+    delimiter — and a second source (SnapTrade) will feed this same key later.
+
+    Length prefixes make the encoding unambiguous even when a field itself looks
+    like one: "3:xy" encodes as "4:3:xy", which can only be read back one way.
+
+    This format is effectively persistent schema. Changing it changes every ref, so
+    an existing ledger would have to be rebuilt rather than re-imported.
+    """
+    return "".join(f"{len(field)}:{field}" for field in (*astuple(row), str(ordinal)))
