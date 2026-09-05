@@ -1,9 +1,22 @@
 """Exact-Decimal column type.
 
-SQLAlchemy's `Numeric` on SQLite round-trips through float, which reintroduces the
-cent-level drift the Decimal discipline exists to prevent. Storing the canonical
-string keeps SQLite exact, while Postgres still gets a real NUMERIC column, so the
-schema stays portable without giving up exactness locally.
+SQLAlchemy's `Numeric` round-trips through float on SQLite, which reintroduces the
+cent-level drift the Decimal discipline exists to prevent -- so SQLite stores the
+canonical string. A `Numeric(28, 10)` column on Postgres has the opposite problem:
+Postgres *pads* a stored value to the column's declared scale, so
+`Decimal("502.1500")` comes back as `Decimal("502.1500000000")`. Since
+`TransactionOut` serialises money with `str(value)`, the same ledger would then
+render a different string locally and on Postgres, and the storage layer's scale
+invariant (`str(txn.price_local) == "502.1500"`, exponent `-4`) would fail there.
+
+So the canonical string is stored on both dialects: this type's whole purpose is
+exactness, and scale is part of what "exact" means for a value that came from a
+broker statement, not part of a numeric quantity to be normalised away.
+
+Trade-off, recorded deliberately: this gives up DB-side numeric aggregation
+(SQL `SUM`/`AVG`) on Postgres too. That is acceptable because the design puts
+analytics in pandas over derived tables (design doc Sec 4.1), never in SQL over
+the ledger itself.
 """
 
 from __future__ import annotations
@@ -11,7 +24,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Dialect, Numeric, String, TypeDecorator
+from sqlalchemy import Dialect, String, TypeDecorator
 
 
 class DecimalString(TypeDecorator[Decimal]):
@@ -19,8 +32,6 @@ class DecimalString(TypeDecorator[Decimal]):
     cache_ok = True
 
     def load_dialect_impl(self, dialect: Dialect) -> Any:
-        if dialect.name == "postgresql":
-            return dialect.type_descriptor(Numeric(28, 10))
         return dialect.type_descriptor(String(40))
 
     def process_bind_param(self, value: Decimal | None, dialect: Dialect) -> Any:
@@ -32,7 +43,7 @@ class DecimalString(TypeDecorator[Decimal]):
                 "This column type is the last boundary where the no-float rule can "
                 "still be enforced; coercing here would defeat its whole purpose."
             )
-        return value if dialect.name == "postgresql" else str(value)
+        return str(value)
 
     def process_result_value(self, value: Any, dialect: Dialect) -> Decimal | None:
         if value is None:
