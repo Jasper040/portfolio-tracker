@@ -18,6 +18,21 @@ def test_money_refuses_to_add_across_currencies() -> None:
         Money(Decimal("1"), "EUR") + Money(Decimal("1"), "USD")
 
 
+def test_money_subtracts_within_one_currency() -> None:
+    assert Money(Decimal("3.30"), "EUR") - Money(Decimal("1.10"), "EUR") == Money(
+        Decimal("2.20"), "EUR"
+    )
+
+
+def test_money_refuses_to_subtract_across_currencies() -> None:
+    with pytest.raises(CurrencyMismatch):
+        Money(Decimal("1"), "EUR") - Money(Decimal("1"), "USD")
+
+
+def test_money_negates() -> None:
+    assert -Money(Decimal("1.10"), "EUR") == Money(Decimal("-1.10"), "EUR")
+
+
 def test_fx_converts_by_dividing_degiro_style() -> None:
     """DeGiro quotes local-per-EUR, so converting divides: -1004.25 / 1.2150.
 
