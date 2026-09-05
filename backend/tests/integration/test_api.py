@@ -1,4 +1,3 @@
-# backend/tests/integration/test_api.py
 from pathlib import Path
 
 from fastapi.testclient import TestClient
