@@ -3,12 +3,19 @@
 Every import writes an `import_batch` and is fully reversible. Idempotency comes
 from the unique `(source, source_ref)` constraint plus a pre-read of existing refs,
 so re-importing a file inserts nothing rather than raising.
+
+`import_degiro_export` is the entry point that enforces design doc Sec 6.3: an
+export with an unresolved corporate action does not import at all. The refusal is
+total rather than partial-with-a-warning because a split booked as a trade does not
+announce itself -- it just makes every realised figure for that instrument wrong,
+and a ledger that is 99% right looks exactly like one that is right.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,10 +24,33 @@ from uuid import UUID, uuid4
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from app.ingest.corporate_actions import (
+    CorporateAction,
+    Resolution,
+    detect,
+    load_resolutions,
+    pending,
+    suppressed_refs,
+)
+from app.ingest.degiro.account_csv import parse_account_csv
 from app.ingest.degiro.transactions_csv import PARSER_VERSION, SOURCE, parse_transactions_csv
-from app.models.ledger import Account, ImportBatch, Transaction
+from app.models.ledger import Account, CorporateActionReview, ImportBatch, Transaction
 
 DEFAULT_ACCOUNT_NAME = "DeGiro Main"
+
+TRANSACTIONS_FILENAME = "Transactions.csv"
+ACCOUNT_FILENAME = "Account.csv"
+
+
+class QuarantineError(RuntimeError):
+    """Import refused: Sec 6.3 corporate actions are still waiting on a human."""
+
+    def __init__(self, unresolved: Sequence[CorporateAction]) -> None:
+        self.pending: tuple[CorporateAction, ...] = tuple(unresolved)
+        super().__init__(
+            f"{len(self.pending)} unresolved corporate action(s); "
+            "answer them in the resolutions file before importing"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +78,24 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def import_transactions_file(engine: Engine, path: Path, account_id: UUID) -> ImportResult:
+def import_transactions_file(
+    engine: Engine,
+    path: Path,
+    account_id: UUID,
+    suppressed: Mapping[str, str] | None = None,
+) -> ImportResult:
     """Parse `path` and insert every row not already present.
 
     A `MalformedRow` from the parser is allowed to propagate: a broken export must
     abort the whole import rather than land partially, so it is not caught here.
+
+    `suppressed` maps a `source_ref` to the reason it is not an economic event --
+    a resolved corporate action. Those rows are still inserted, because the ledger
+    records what the export said, but they are flagged so lot matching skips them.
+    This is the mechanical half of the import; the Sec 6.3 gate that decides what
+    belongs in `suppressed` lives in `import_degiro_export`.
     """
+    reasons = suppressed or {}
     rows = parse_transactions_csv(path)
     batch_id = uuid4()
 
@@ -102,9 +144,14 @@ def import_transactions_file(engine: Engine, path: Path, account_id: UUID) -> Im
                     gross_local=row.gross_local,
                     net_base=row.net_base,
                     order_ref=row.order_ref,
-                    is_economic=row.is_economic,
+                    is_economic=row.is_economic and row.source_ref not in reasons,
+                    # Deliberately untouched by suppression. Its vocabulary
+                    # (DECISION, TRANSFER, PRODUCT_CHANGE, DELISTING) describes why
+                    # a LOT closed, and a suppressed row never closes one. The
+                    # reason goes in `note`, where it can be read without a join.
                     closure_reason=row.closure_reason,
                     raw_json=json.dumps(row.raw, ensure_ascii=False),
+                    note=reasons.get(row.source_ref),
                 )
             )
         session.commit()
@@ -114,6 +161,97 @@ def import_transactions_file(engine: Engine, path: Path, account_id: UUID) -> Im
         rows_parsed=len(rows),
         rows_inserted=len(fresh),
         rows_skipped=len(rows) - len(fresh),
+    )
+
+
+def _suppression_notes(
+    candidates: Sequence[CorporateAction], resolutions: Mapping[str, Resolution]
+) -> dict[str, str]:
+    """Which rows to flag, and the sentence explaining why, keyed by `source_ref`."""
+    refs = suppressed_refs(candidates, resolutions)
+    return {
+        ref: f"corporate action {candidate.key} ({candidate.kind})"
+        for candidate in candidates
+        for ref in candidate.source_refs
+        if ref in refs
+    }
+
+
+def rebuild_review_queue(
+    engine: Engine,
+    candidates: Sequence[CorporateAction],
+    resolutions: Mapping[str, Resolution],
+) -> None:
+    """Replace the review queue with the current candidates.
+
+    Replace, not append: the queue is a projection of the export and the
+    resolutions file, so rebuilding it is the only way it can never disagree with
+    them. An accumulating log would surface events already answered, and a review
+    queue nobody trusts is a review queue nobody reads.
+    """
+    detected_at = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        for stale in session.exec(select(CorporateActionReview)).all():
+            session.delete(stale)
+        session.flush()
+        for candidate in candidates:
+            resolution = resolutions.get(candidate.key)
+            session.add(
+                CorporateActionReview(
+                    id=uuid4(),
+                    key=candidate.key,
+                    trade_date=candidate.trade_date,
+                    isin=candidate.isin,
+                    local_amount=candidate.local_amount,
+                    kind=candidate.kind,
+                    label=candidate.label,
+                    source_refs=json.dumps(list(candidate.source_refs)),
+                    detected_at=detected_at,
+                    resolved=resolution is not None,
+                    note=resolution.note if resolution is not None else None,
+                )
+            )
+        session.commit()
+
+
+def import_degiro_export(
+    engine: Engine, export_dir: Path, account_id: UUID, resolutions_path: Path
+) -> ImportResult:
+    """Import a DeGiro export directory, refusing while a corporate action is open.
+
+    Both files are read before anything is written. `Account.csv` is not imported
+    here -- it is authoritative for everything that is not a trade (Sec 6.2), but
+    what it contributes to *this* step is the corporate-action label that
+    `Transactions.csv` does not carry.
+
+    The file is parsed twice: once here to detect, once inside
+    `import_transactions_file`, which owns the file hash and parser version it
+    records on the batch. Source refs are deterministic, so the two parses agree by
+    construction, and 112 rows is not worth coupling the two steps to avoid.
+    """
+    transactions_path = export_dir / TRANSACTIONS_FILENAME
+    account_path = export_dir / ACCOUNT_FILENAME
+    for required in (transactions_path, account_path):
+        if not required.exists():
+            raise FileNotFoundError(f"{required} is missing; both DeGiro exports are required")
+
+    candidates = detect(parse_transactions_csv(transactions_path), parse_account_csv(account_path))
+    resolutions = load_resolutions(resolutions_path)
+
+    # Written before the refusal, not after: the operator answers the questions in
+    # a different terminal than the one that raised, so the queue has to outlive
+    # the process that found them.
+    rebuild_review_queue(engine, candidates, resolutions)
+
+    unresolved = pending(candidates, resolutions)
+    if unresolved:
+        raise QuarantineError(unresolved)
+
+    return import_transactions_file(
+        engine,
+        transactions_path,
+        account_id,
+        suppressed=_suppression_notes(candidates, resolutions),
     )
 
 

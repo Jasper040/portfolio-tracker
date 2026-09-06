@@ -44,6 +44,38 @@ class ImportBatch(SQLModel, table=True):
     inserted_count: int
 
 
+class CorporateActionReview(SQLModel, table=True):
+    """The quarantine queue (design doc Sec 6.3). Deliberately NOT part of the ledger.
+
+    A projection of `(export, config/corporate_actions.yaml)`, rebuilt on every
+    import rather than appended to. The answers live in the YAML file, so a row
+    here holds no state of its own -- and a queue that accumulated would keep
+    asking questions the operator has already answered, which is the fastest way to
+    train someone to ignore it.
+
+    That also means the append-only rule does not apply: nothing here is a
+    financial fact, it is a to-do list derived from facts held elsewhere.
+    """
+
+    __tablename__ = "corporate_action_review"
+    __table_args__ = (UniqueConstraint("key", name="uq_corporate_action_review_key"),)
+
+    id: UUID = Field(primary_key=True)
+    #: `isin:date:amount` -- the same key the resolutions file is written against.
+    key: str = Field(index=True)
+    trade_date: date = Field(index=True)
+    isin: str = Field(index=True)
+    local_amount: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    #: SPLIT, PRODUCT_CHANGE, or UNLABELLED when Account.csv did not name it.
+    kind: str
+    label: str
+    #: JSON list of the `transaction.source_ref`s this event covers.
+    source_refs: str
+    detected_at: datetime
+    resolved: bool = False
+    note: str | None = None
+
+
 class Transaction(SQLModel, table=True):
     """One economic event. Never updated in place; only inserted or batch-deleted."""
 
