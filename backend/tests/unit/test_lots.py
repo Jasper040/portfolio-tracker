@@ -1,6 +1,6 @@
 """Lot matching, ported from the tested TypeScript implementation with two upgrades:
-Decimal instead of float, and fee attribution routed through `apportion` so
-`Σ attributed fees == Σ ledger fees` holds exactly (design doc Sec 11.2).
+Decimal instead of float, and charge attribution routed through `apportion_charges`
+so `Σ attributed charges == Σ ledger charges` holds exactly (design doc Sec 11.2).
 """
 
 from __future__ import annotations

@@ -3,8 +3,10 @@
 Design doc Sec 6.4. Rows are grouped into economic orders on
 `(order_ref, trade_datetime, isin)`, falling back to a synthetic key when
 `order_ref` is blank. Fees and trade-linked taxes are attributed **at order level**,
-then pro-rata by value across the closures the order produces. Buy fees capitalise
-into the lot at open; sell fees reduce proceeds.
+then pro-rata by value across the closures the order produces. Cost basis is
+quantity times price, full stop: charges are never capitalised into it. They ride
+alongside as their own figure and are deducted from P&L (design doc Sec 6.4,
+decided 2026-09-06).
 
 Portfolio-level fees (DeGiro's `Aansluitingskosten`) are never attributed to a lot.
 They appear in portfolio cost totals and reduce TWR/MWR, not per-lot P&L.
