@@ -19,6 +19,7 @@ import pytest
 from app.ingest.symbols import (
     MANUAL_ANSWER,
     MalformedSymbolAnswers,
+    SymbolAnswer,
     instrument_names,
     load_symbol_answers,
     observations,
@@ -262,6 +263,35 @@ class TestResolution:
         assert report.resolved == {"NL0000000001": None}
         assert report.pending == ()
 
+    def test_a_candidate_whose_series_came_back_empty_is_dropped_not_judged(self) -> None:
+        """Judging it instead would report NO_CLOSE_NEAR_TRADE, which reads as
+        "the wrong instrument" when the truth is "nothing came back at all" --
+        and the operator would be sent hunting for a ticker that does not
+        exist."""
+        prices = StubPrices({})
+        report = resolve_symbols(
+            self.TRADES,
+            answers={},
+            resolver=StubResolver({"NL0000000001": ("EXA.AS",)}),
+            prices=prices,
+        )
+        assert prices.asked == ["EXA.AS"]
+        assert [p.isin for p in report.pending] == ["NL0000000001"]
+        assert report.pending[0].verdicts == ()
+
+    def test_a_candidate_with_a_series_but_no_points_is_dropped_too(self) -> None:
+        empty = PriceSeries(symbol="EXA.AS", currency="EUR", source="stub", points=())
+        prices = StubPrices({"EXA.AS": empty})
+        report = resolve_symbols(
+            self.TRADES,
+            answers={},
+            resolver=StubResolver({"NL0000000001": ("EXA.AS",)}),
+            prices=prices,
+        )
+        assert prices.asked == ["EXA.AS"]
+        assert [p.isin for p in report.pending] == ["NL0000000001"]
+        assert report.pending[0].verdicts == ()
+
     def test_carries_the_split_ratio_into_the_check(self) -> None:
         """The pre-split trade only agrees once M1's derived ratio is applied.
         Without it the right symbol would be quarantined on every instrument
@@ -295,7 +325,5 @@ class TestResolution:
         assert report.resolved == {"NL0000000001": "EXA.AS"}
 
 
-def _answer(isin: str, symbol: str | None):
-    from app.ingest.symbols import SymbolAnswer
-
+def _answer(isin: str, symbol: str | None) -> SymbolAnswer:
     return SymbolAnswer(isin=isin, symbol=symbol, note="")

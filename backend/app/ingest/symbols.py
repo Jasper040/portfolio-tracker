@@ -134,7 +134,7 @@ def load_symbol_answers(path: Path) -> dict[str, SymbolAnswer]:
         if not isinstance(isin, str) or not isin.strip():
             raise MalformedSymbolAnswers(f"{where} needs a non-empty string 'isin'")
         if isin in answers:
-            raise MalformedSymbolAnswers(f"{path}: {isin} is answered twice")
+            raise MalformedSymbolAnswers(f"{path}: {isin!r} is answered twice")
 
         symbol = entry.get("symbol")
         if not isinstance(symbol, str) or not symbol.strip():
