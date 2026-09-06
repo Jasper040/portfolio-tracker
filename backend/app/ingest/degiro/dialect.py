@@ -168,3 +168,27 @@ ACCOUNT_RAW_FIELDS: tuple[str, ...] = (
     "Balance",
     "Order Id",
 )
+
+
+class PortCol:
+    """Verified positional indices for Portfolio.csv.
+
+    Same misalignment as the other two files: the header's blank placeholder sits
+    before `Value in EUR` while the data carries `local_value_ccy, local_value,
+    value_eur`. Portfolio.csv is never imported -- it is only a reconciliation
+    target (Sec 6.2) -- so this exists to read the target, not to load anything.
+    """
+
+    PRODUCT = 0
+    ISIN = 1
+    AMOUNT = 2
+    CLOSING = 3
+    LOCAL_CCY = 4
+    LOCAL_VALUE = 5
+    VALUE_EUR = 6
+
+
+#: Portfolio.csv reports one combined cash line covering the DeGiro cash account
+#: AND the flatex (FTX) bank account. That is why the Sec 3.6 cash invariant nets
+#: out the sweep between them: they are two pockets of one pot.
+CASH_ROW_PREFIX = "CASH & CASH FUND"

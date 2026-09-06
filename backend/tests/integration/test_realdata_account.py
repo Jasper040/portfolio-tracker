@@ -12,11 +12,15 @@ directory is absent.
 from __future__ import annotations
 
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from app.ingest.degiro.account_csv import AccountRow, parse_account_csv
+from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
+from app.ingest.degiro.transactions_csv import parse_transactions_csv
+from app.ingest.reconcile import AGGREGATE_TOLERANCE, combined_eur_cash, reconcile
 
 REAL = Path(__file__).parents[3] / "degiro-export" / "Account.csv"
 
@@ -129,3 +133,103 @@ def test_the_flatex_withdrawal_pattern_has_three_rows_not_two() -> None:
     ]
     assert len(rows) == 3
     assert sum(r.change for r in rows if r.change is not None) == -8000
+
+
+REAL_TXNS = REAL.parent / "Transactions.csv"
+REAL_PORTFOLIO = REAL.parent / "Portfolio.csv"
+
+
+@pytest.mark.skipif(not REAL_TXNS.exists(), reason="real DeGiro export not present")
+def test_all_cross_file_invariants_are_green() -> None:
+    """Sec 3.6, the whole table, against the real exports.
+
+    This is what M0's "cross-file reconciliation report green" means. Each figure
+    below is the design doc's own, derived by hand from these files.
+    """
+
+    report = reconcile(
+        parse_transactions_csv(REAL_TXNS),
+        _rows(),
+        parse_portfolio_csv(REAL_PORTFOLIO),
+    )
+    assert report.ok, [(i.name, i.expected, i.actual, i.detail) for i in report.failures]
+    assert len(report.invariants) == 4
+
+
+@pytest.mark.skipif(not REAL_TXNS.exists(), reason="real DeGiro export not present")
+def test_commission_total_is_the_published_figure() -> None:
+
+    account_fees = sum(
+        (
+            r.change
+            for r in _rows()
+            if r.description.casefold().startswith("degiro transactiekosten")
+        )
+    )
+    ledger_fees = sum(t.fee_base for t in parse_transactions_csv(REAL_TXNS))
+    assert account_fees == ledger_fees == Decimal("-252.00")
+
+
+@pytest.mark.skipif(not REAL_TXNS.exists(), reason="real DeGiro export not present")
+def test_one_hundred_and_four_orders_carry_one_commission_each() -> None:
+
+    fee_rows = [
+        r for r in _rows() if r.description.casefold().startswith("degiro transactiekosten")
+    ]
+    order_ids = {t.order_ref for t in parse_transactions_csv(REAL_TXNS) if t.order_ref}
+    assert len(order_ids) == len(fee_rows) == 104
+
+
+@pytest.mark.skipif(not REAL_PORTFOLIO.exists(), reason="real DeGiro export not present")
+def test_computed_cash_reproduces_the_brokers_own_balance() -> None:
+    """The invariant Sec 3.6 left "pending M0", now closed.
+
+    Portfolio.csv reports ONE combined cash line covering the DeGiro cash account
+    and the flatex bank account, so the sweep between them nets out and everything
+    else counts. Computed -2241.15 against a stated -2241.16: a cent, well inside
+    the Sec 5.4 aggregate tolerance of EUR 0.50, and consistent with the broker's
+    own arithmetic disagreeing with itself by a cent on 14 of 112 rows.
+    """
+
+    stated = parse_portfolio_csv(REAL_PORTFOLIO).cash_base
+    computed = combined_eur_cash(_rows())
+    assert stated == Decimal("-2241.16")
+    assert abs(computed - stated) <= AGGREGATE_TOLERANCE
+
+
+@pytest.mark.skipif(not REAL_PORTFOLIO.exists(), reason="real DeGiro export not present")
+def test_the_flatex_rows_are_real_cash_movements_not_an_internal_pair() -> None:
+    """Resolves the discrepancy recorded above, and contradicts Sec 3.2.
+
+    Cash reconciles only when the three flatex rows are counted. Excluding them as
+    "an offsetting internal pair" leaves computed cash 8000.00 too high, far outside
+    any tolerance. So EUR 8000 genuinely left the combined pot, and SEPA Instant
+    Terugstorting is NOT the account's only external outflow.
+
+    This matters beyond bookkeeping: an 8000 withdrawal misclassified as internal
+    would distort MWR, which weights by when money actually moved.
+    """
+
+    stated = parse_portfolio_csv(REAL_PORTFOLIO).cash_base
+    rows = _rows()
+    with_flatex = combined_eur_cash(rows)
+    without_flatex = combined_eur_cash(
+        [
+            r
+            for r in rows
+            if not r.description.casefold().startswith(
+                ("processed flatex", "flatex terugstorting")
+            )
+        ]
+    )
+    assert abs(with_flatex - stated) <= Decimal("0.50")
+    assert without_flatex - with_flatex == Decimal("8000.00")
+
+
+@pytest.mark.skipif(not REAL_PORTFOLIO.exists(), reason="real DeGiro export not present")
+def test_portfolio_snapshot_carries_the_m1_target() -> None:
+    """ORN = 32 is the number M1's corporate-action path has to reproduce."""
+
+    snapshot = parse_portfolio_csv(REAL_PORTFOLIO)
+    assert len(snapshot.positions) == 6
+    assert snapshot.quantity_of("US0000000901") == Decimal("32")

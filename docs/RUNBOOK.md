@@ -116,6 +116,7 @@ nothing and reports the rows as skipped.
 | `python -m app.cli import <path>` | Import a DeGiro `Transactions.csv`. Prints the batch id. |
 | `python -m app.cli batches` | List import batches, newest first. This is how to find a batch id after the terminal has scrolled. |
 | `python -m app.cli undo <batch-id>` | Remove every transaction from one batch. The ledger's only reversal mechanism. |
+| `python -m app.cli reconcile <export-dir>` | Check the cross-file invariants between `Transactions.csv`, `Account.csv` and `Portfolio.csv` (design doc Sec 3.6). Exits non-zero on any failure, so it can gate an import in a script. `Portfolio.csv` is optional; without it the cash invariant is skipped. |
 
 To try the app without touching real data, import the synthetic golden file
 instead — same shape, invented amounts:
@@ -132,8 +133,8 @@ python -m app.cli import tests\golden\degiro_transactions_golden.csv
 
 ```powershell
 cd backend
-python -m pytest                 # 78 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: runs against the gitignored real exports.
+python -m pytest                 # 169 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 13 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.
@@ -173,10 +174,11 @@ the automated gates.
 ```
 backend/app/
   api/          FastAPI routes and response schemas
-  domain/       Money and FX value objects
-  ingest/       DeGiro CSV parsing and the importer
+  domain/       Pure logic: money, FX, lot matching, fee apportionment
+  ingest/       DeGiro CSV parsing (transactions, account, portfolio), importer,
+                cross-file reconciliation
   models/       SQLModel tables (the ledger)
-  cli.py        import / batches / undo
+  cli.py        import / batches / undo / reconcile
 
 frontend/src/
   api/          Live client for /api/transactions
