@@ -20,7 +20,24 @@ export interface Transaction {
   raw: Record<string, string>;
 }
 
-export interface TransactionPage {
+/** Which lot-matching method produced the realised figures in a response.
+ *  `null` is a real answer: no matching was applied. */
+export type LotMethodTag = "FIFO" | "LIFO" | "HIFO";
+
+/** How much of the requested data the response could account for (design doc 8.1).
+ *  Anything short of "full" means the UI renders "no data" -- never a zero, and
+ *  never a silent omission from an aggregate. */
+export type Coverage = "missing" | "partial" | "manual" | "full";
+
+/** Provenance, carried by every response envelope. The backend cannot construct
+ *  one without these two fields, so they are always present rather than optional
+ *  here -- see `Provenance` in backend/app/api/schemas.py. */
+export interface Provenance {
+  method: LotMethodTag | null;
+  coverage: Coverage;
+}
+
+export interface TransactionPage extends Provenance {
   items: Transaction[];
   total: number;
   limit: number;

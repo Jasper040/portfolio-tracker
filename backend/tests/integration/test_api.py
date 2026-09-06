@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from app.api.schemas import TransactionPage
 from app.db import create_engine_and_tables
 from app.ingest.importer import ensure_default_account, import_transactions_file
 from app.main import create_app
@@ -91,3 +93,31 @@ def test_cors_origins_can_be_supplied_explicitly() -> None:
         m.kwargs["allow_origins"] for m in app.user_middleware if "allow_origins" in m.kwargs
     ]
     assert origins == [["https://example.test"]]
+
+
+def test_response_envelope_cannot_be_built_without_provenance() -> None:
+    """Design doc Sec 9.2: the fields are structural, not conventional.
+
+    This is the test that keeps the rule alive. A default on either field would
+    let an endpoint ship without saying what produced its numbers, and the
+    omission would be invisible in review.
+    """
+    with pytest.raises(ValidationError):
+        TransactionPage(items=[], total=0, limit=10, offset=0)  # type: ignore[call-arg]
+
+
+def test_provenance_rejects_a_coverage_value_outside_the_vocabulary() -> None:
+    with pytest.raises(ValidationError):
+        TransactionPage(
+            items=[], total=0, limit=10, offset=0, method=None, coverage="probably fine"  # type: ignore[arg-type]
+        )
+
+
+def test_transactions_report_no_lot_method_and_full_coverage() -> None:
+    """A raw ledger listing applies no matching, so `method` is null rather than the
+    configured default -- naming a method here would claim a computation that never
+    ran. Coverage is full because every row is broker truth, with no external series
+    that could be missing."""
+    body = _client().get("/api/transactions").json()
+    assert body["method"] is None
+    assert body["coverage"] == "full"

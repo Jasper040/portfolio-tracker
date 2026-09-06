@@ -15,8 +15,9 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { fetchTransactions } from "../api/client";
-import type { Transaction } from "../api/types";
+import type { Transaction, TransactionPage } from "../api/types";
 import { Badge } from "../components/ui/Badge";
+import { MethodBadge } from "../components/ui/MethodBadge";
 import { Notice } from "../components/ui/Notice";
 import { HeadRow, Table, TableFrame, Td, rowBackground, type ColumnDef } from "../components/ui/Table";
 import { c, mono } from "../lib/theme";
@@ -64,7 +65,7 @@ function flagFor(txn: Transaction): { label: string; color: string } | null {
 }
 
 export function Transactions() {
-  const [page, setPage] = useState<{ items: Transaction[]; total: number } | null>(null);
+  const [page, setPage] = useState<TransactionPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -73,7 +74,7 @@ export function Transactions() {
     let cancelled = false;
     fetchTransactions()
       .then((p) => {
-        if (!cancelled) setPage({ items: p.items, total: p.total });
+        if (!cancelled) setPage(p);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -143,6 +144,10 @@ export function Transactions() {
           <span style={{ fontFamily: mono, fontSize: 9.5, color: c.textFaint }}>SOURCE</span>
           live API
         </span>
+        {/* Provenance straight from the response envelope, never inferred here:
+            the point of the required fields is that the screen reports what the
+            API said rather than what the screen assumes. */}
+        {page && <MethodBadge method={page.method} coverage={page.coverage} />}
       </div>
 
       <Notice>
