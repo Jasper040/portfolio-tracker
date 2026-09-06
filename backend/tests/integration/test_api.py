@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import create_engine_and_tables
@@ -67,3 +68,26 @@ def test_paging_covers_every_row_exactly_once() -> None:
 
     assert paged == expected
     assert len(set(paged)) == len(paged)
+
+
+def test_injected_engine_does_not_require_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Building the app around a supplied engine must not read the environment.
+
+    The whole suite injects an engine, so if `create_app` reached for settings
+    unconditionally every test would need a DATABASE_URL it never uses -- and the
+    failure would arrive as a Pydantic ValidationError from an unrelated import.
+    """
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    engine = create_engine_and_tables("sqlite://")
+    assert create_app(engine).state.engine is engine
+
+
+def test_cors_origins_can_be_supplied_explicitly() -> None:
+    engine = create_engine_and_tables("sqlite://")
+    app = create_app(engine, cors_origins=["https://example.test"])
+    origins = [
+        m.kwargs["allow_origins"] for m in app.user_middleware if "allow_origins" in m.kwargs
+    ]
+    assert origins == [["https://example.test"]]
