@@ -70,7 +70,11 @@ export interface Closure {
   id: string;
   method: LotMethodTag;
   isin: string;
+  /** Both halves of the pair. A closure is a (buy, sale) match, and carrying only
+   *  the buy would leave half of it untraceable back to the ledger rows it came
+   *  from -- see `Closure` in backend/app/domain/lots.py. */
   lot_source_ref: string;
+  sale_source_ref: string;
   opened_on: string;
   closed_on: string;
   quantity: string;

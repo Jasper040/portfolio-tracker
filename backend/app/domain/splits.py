@@ -62,6 +62,14 @@ def derive_splits(rows: Sequence[LedgerRow]) -> list[Split]:
                     "surrendered has no derivable ratio"
                 )
             continue
+        # One Decimal division, so a ratio that does not terminate in base 10 -- a
+        # 1-for-3 reverse split gives 0.333... -- is exact only to Decimal's default
+        # 28-digit context. `quantity * price` is then invariant to 28 digits rather
+        # than exactly, which is far tighter than any figure this app displays but
+        # is not the exactness the rest of the money path guarantees. Every ratio
+        # the design doc commits to testing terminates (2:1, 3:2, 1:10), as does the
+        # one real split (ORN 10:1), so nothing exercises it today. Worth knowing
+        # before someone meets an odd ratio and wonders where a digit went.
         ratio = into / abs(out)
         # 1.0 is a product change: the instrument changed, the share count did not.
         if ratio == 1:

@@ -139,7 +139,12 @@ class ClosureOut(BaseModel):
     id: str
     method: str
     isin: str
+    #: Both halves of the pair. `LotClosure` stores the sale's `source_ref` and
+    #: `domain/lots.py` argues for it -- "a closure is a pair, and carrying only the
+    #: buy would leave half of it untraceable back to the ledger". Omitted here it
+    #: was written by every rebuild and read by nothing.
     lot_source_ref: str
+    sale_source_ref: str
     opened_on: date
     closed_on: date
     quantity: Decimal
@@ -174,6 +179,7 @@ class ClosureOut(BaseModel):
             method=closure.method,
             isin=closure.isin,
             lot_source_ref=closure.lot_source_ref,
+            sale_source_ref=closure.sale_source_ref,
             opened_on=closure.opened_on,
             closed_on=closure.closed_on,
             quantity=closure.quantity,

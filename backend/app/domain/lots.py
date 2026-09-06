@@ -164,10 +164,6 @@ class MatchResult:
         return sum((lot.charges for lot in self.open_lots), Charges.zero())
 
     @property
-    def gross_realised(self) -> Decimal:
-        return sum((closure.gross_pnl for closure in self.closures), Decimal(0))
-
-    @property
     def realised(self) -> Decimal:
         return sum((closure.pnl for closure in self.closures), Decimal(0))
 
