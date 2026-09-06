@@ -114,9 +114,8 @@ def _position_points(
     Equivalent to recomputing the running total from scratch for every day --
     each day's answer is still "every fill dated on or before this day, summed"
     -- but each fill is visited once per instrument rather than once per
-    instrument per day. Over five years of history that is the difference
-    between roughly 1300 weekdays x 37 instruments x 110 fills of repeated
-    summation and a single linear pass per instrument.
+    instrument per day: one linear pass over each instrument's fills, instead
+    of a full rescan of them on every day in the window.
     """
     points: list[PositionPoint] = []
     isins = sorted(fills_by_isin)

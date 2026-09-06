@@ -19,10 +19,13 @@ Four things are easy to get wrong and each has a test that fails when they are:
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
+from app.domain import positions as positions_module
 from app.domain.positions import CashPoint, PositionPoint, daily_series, weekdays
 
 D = Decimal
@@ -62,6 +65,10 @@ def trade(ref: str, on: date, isin: str, qty: str, value: str, *, order: str = "
 def cash_row(ref: str, on: date, amount: str) -> Row:
     """A deposit, dividend or fee: cash moved, no shares."""
     return Row(source_ref=ref, trade_date=on, net_base=D(amount), quantity=None, order_ref=None)
+
+def _is_forbidden_import(module: str) -> bool:
+    """A name that would pull the ORM, or a model built on it, into `domain/`."""
+    return module.startswith("app.models") or module in {"sqlmodel", "sqlalchemy"}
 
 class TestWeekdays:
     def test_skips_saturday_and_sunday(self) -> None:
@@ -255,14 +262,65 @@ class TestCash:
         assert series.first_position_day == date(2025, 1, 9)
 
 class TestPurity:
-    def test_the_window_end_is_a_parameter(self) -> None:
-        """`domain/` calls no `date.today()`. Two calls with the same arguments
-        must give the same answer on any day, which is what lets `rebuild()`
-        claim determinism."""
-        rows = [trade("a", date(2025, 1, 6), "NL0000000001", "10", "-1000.00")]
-        first = daily_series(rows, through=date(2025, 1, 10))
-        second = daily_series(rows, through=date(2025, 1, 10))
-        assert first == second
+    def test_the_window_end_alone_decides_where_the_series_stops(self) -> None:
+        """Two calls with IDENTICAL arguments trivially agree on everything --
+        that pins nothing about `through`. This calls `daily_series` twice on
+        the same rows with two different `through` dates and checks that the
+        shorter result is a strict PREFIX of the longer one: every day inside
+        the shorter window is untouched by widening it, and the days the wider
+        window adds all come after the shorter window's last day. That is what
+        it means for `through`, and nothing else, to decide where the series
+        stops."""
+        rows = [
+            trade("a", date(2025, 1, 6), "NL0000000001", "10", "-1000.00"),
+            trade("b", date(2025, 1, 7), "NL0000000001", "-10", "1100.00"),
+            trade("c", date(2025, 1, 9), "NL0000000001", "4", "-500.00"),
+        ]
+        shorter = daily_series(rows, through=date(2025, 1, 10))
+        longer = daily_series(rows, through=date(2025, 1, 14))
+
+        # Strict: the wider window must actually add days, not just agree.
+        assert len(longer.positions) > len(shorter.positions)
+        assert len(longer.cash) > len(shorter.cash)
+
+        assert longer.positions[: len(shorter.positions)] == shorter.positions
+        assert longer.cash[: len(shorter.cash)] == shorter.cash
+
+        last_position_day = shorter.positions[-1].on
+        assert all(
+            point.on > last_position_day
+            for point in longer.positions[len(shorter.positions) :]
+        )
+
+        last_cash_day = shorter.cash[-1].on
+        assert all(
+            point.on > last_cash_day for point in longer.cash[len(shorter.cash) :]
+        )
+
+    def test_the_module_reads_no_clock(self) -> None:
+        """The property that lets `rebuild()` claim determinism -- until now
+        this was guaranteed only by a comment. An AST walk over the module's
+        own source makes it a test: no `.today`/`.now` attribute access, and no
+        import of the ORM or its models."""
+        source = Path(positions_module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                assert node.attr not in {"today", "now"}, (
+                    f"`.{node.attr}` reads a clock; `through` must be the only "
+                    "thing that decides the window end"
+                )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not _is_forbidden_import(alias.name), (
+                        f"import of {alias.name!r} would break domain/ purity"
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                assert not _is_forbidden_import(module), (
+                    f"import of {module!r} would break domain/ purity"
+                )
 
     def test_an_empty_ledger_produces_an_empty_series(self) -> None:
         series = daily_series([], through=date(2025, 1, 10))
