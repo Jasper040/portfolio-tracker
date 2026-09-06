@@ -10,6 +10,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.domain.charges import Charges
 from app.domain.lots import LotTransaction, match_lots
 
 D = Decimal
@@ -22,7 +23,7 @@ def buy(ref: str, quantity: str, price: str, fees: str = "0.00", day: int = 1) -
         side="BUY",
         quantity=D(quantity),
         price=D(price),
-        fees=D(fees),
+        charges=Charges(commission=D(fees)),
     )
 
 
@@ -33,7 +34,7 @@ def sell(ref: str, quantity: str, price: str, fees: str = "0.00", day: int = 1) 
         side="SELL",
         quantity=D(quantity),
         price=D(price),
-        fees=D(fees),
+        charges=Charges(commission=D(fees)),
     )
 
 
@@ -64,8 +65,8 @@ class TestTheThreeMethodsDisagree:
         assert match_lots(self.TRANSACTIONS, method).quantity == D("20")  # type: ignore[arg-type]
 
     def test_the_remaining_cost_basis_differs_per_method(self) -> None:
-        assert match_lots(self.TRANSACTIONS, "FIFO").cost == D("400")  # 30 and 10 remain
-        assert match_lots(self.TRANSACTIONS, "LIFO").cost == D("500")  # 20 and 30 remain
+        assert match_lots(self.TRANSACTIONS, "FIFO").cost_basis == D("400")  # 30 and 10 remain
+        assert match_lots(self.TRANSACTIONS, "LIFO").cost_basis == D("500")  # 20 and 30 remain
 
 
 class TestFeeAttribution:
@@ -75,7 +76,7 @@ class TestFeeAttribution:
         # Buy leg: 2.00 x 5/10 = 1.00. Total 5.00.
         result = match_lots([buy("1", "10", "10", "2.00"), sell("2", "5", "20", "4.00")], "FIFO")
         assert len(result.closures) == 1
-        assert result.closures[0].fees == D("5.00")
+        assert result.closures[0].charges.total == D("5.00")
         assert result.closures[0].pnl == D("45.00")
 
     def test_charges_a_purchase_fee_once_across_tranches(self) -> None:
@@ -88,12 +89,12 @@ class TestFeeAttribution:
             "FIFO",
         )
         assert len(result.closures) == 2
-        assert sum(c.fees for c in result.closures) == D("2.00")
+        assert sum(c.charges.total for c in result.closures) == D("2.00")
 
     def test_leaves_the_open_lot_only_its_share(self) -> None:
         result = match_lots([buy("1", "10", "10", "2.00"), sell("2", "5", "20")], "FIFO")
-        assert result.open_lots[0].fees == D("1.00")
-        assert result.cost == D("51.00")
+        assert result.open_lots[0].charges.total == D("1.00")
+        assert result.cost_basis == D("50.00")
 
     @pytest.mark.parametrize(
         "transactions",
@@ -112,10 +113,10 @@ class TestFeeAttribution:
     ) -> None:
         """The standing invariant from Sec 11.2, checked on splits that do not divide."""
         result = match_lots(transactions, "FIFO")
-        attributed = sum(c.fees for c in result.closures) + sum(
-            lot.fees for lot in result.open_lots
+        attributed = sum(c.charges.total for c in result.closures) + sum(
+            lot.charges.total for lot in result.open_lots
         )
-        assert attributed == sum(t.fees for t in transactions)
+        assert attributed == sum(t.charges.total for t in transactions)
 
 
 class TestEdges:
@@ -146,7 +147,7 @@ class TestEdges:
         result = match_lots([buy("1", "10", "10", "1.00")], "FIFO")
         assert result.realised == D("0")
         assert result.closures == []
-        assert result.cost == D("101.00")
+        assert result.cost_basis == D("100.00")
 
     def test_rejects_transactions_out_of_chronological_order(self) -> None:
         # A SELL cannot match a BUY it has not seen. Silently mismatching would
@@ -174,8 +175,8 @@ class TestClosureMetrics:
     def test_declines_to_annualise_a_same_day_round_trip(self) -> None:
         result = match_lots(
             [
-                LotTransaction("1", date(2024, 1, 1), "BUY", D("10"), D("10"), D("0")),
-                LotTransaction("2", date(2024, 1, 1), "SELL", D("10"), D("11"), D("0")),
+                LotTransaction("1", date(2024, 1, 1), "BUY", D("10"), D("10"), Charges.zero()),
+                LotTransaction("2", date(2024, 1, 1), "SELL", D("10"), D("11"), Charges.zero()),
             ],
             "FIFO",
         )
@@ -188,3 +189,60 @@ class TestClosureMetrics:
         result = match_lots([buy("1", "10", "10"), sell("2", "10", "0")], "FIFO")
         assert result.closures[0].return_pct == D("-1")
         assert result.closures[0].annualised_return is None
+
+
+class TestCostBasisExcludesCharges:
+    """Design doc Sec 6.4, decided 2026-09-06.
+
+    Capitalising hides the cost: a lot bought at 655.30 with 4.18 of charges reads
+    as 659.48 and the 4.18 is gone. Net P&L is identical either way; what changes is
+    whether the charge is still visible when you ask what you paid.
+    """
+
+    def test_an_open_lots_basis_is_quantity_times_price(self) -> None:
+        result = match_lots([buy("1", "10", "10.00", "2.00")], "FIFO")
+        assert result.open_lots[0].cost_basis == D("100.00")
+
+    def test_the_charges_are_reported_beside_it_not_inside_it(self) -> None:
+        result = match_lots([buy("1", "10", "10.00", "2.00")], "FIFO")
+        assert result.open_lots[0].charges.total == D("2.00")
+        assert result.cost_basis == D("100.00")
+        assert result.charges.total == D("2.00")
+
+    def test_a_closure_reports_stock_performance_apart_from_charges(self) -> None:
+        """The three numbers the owner asked for: what the stock did, what the
+        broker took, and what is left."""
+        result = match_lots(
+            [buy("1", "10", "10.00", "2.00"), sell("2", "5", "20.00", "4.00")], "FIFO"
+        )
+        closure = result.closures[0]
+        assert closure.gross_pnl == D("50.00")
+        assert closure.charges.total == D("5.00")
+        assert closure.pnl == D("45.00")
+
+    def test_return_is_measured_against_the_fee_free_basis(self) -> None:
+        """5 shares at 10.00 tied up 50.00. Net P&L 45.00 on that is 90%."""
+        result = match_lots(
+            [buy("1", "10", "10.00", "2.00"), sell("2", "5", "20.00", "4.00")], "FIFO"
+        )
+        assert result.closures[0].return_pct == D("0.9")
+
+    def test_commission_and_fx_cost_stay_distinguishable_after_matching(self) -> None:
+        """The whole point of carrying three components through the matcher."""
+        result = match_lots(
+            [
+                LotTransaction(
+                    id="1",
+                    trade_date=date(2020, 1, 1),
+                    side="BUY",
+                    quantity=D("10"),
+                    price=D("10.00"),
+                    charges=Charges(commission=D("2.00"), autofx=D("1.00"), tax=D("0.50")),
+                )
+            ],
+            "FIFO",
+        )
+        lot = result.open_lots[0]
+        assert lot.charges.commission == D("2.00")
+        assert lot.charges.autofx == D("1.00")
+        assert lot.charges.tax == D("0.50")
