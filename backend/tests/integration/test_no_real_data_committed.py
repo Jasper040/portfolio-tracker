@@ -17,13 +17,13 @@ nothing to check and the suite skips.
 Three kinds of thing are searched for, each for its own reason:
 
 * **ISINs** identify a holding outright. Any occurrence is a leak.
-* **Instrument names** identify it just as well. Tokenised, because "ORION
-  CORPORATION" leaks through "ORION" alone.
-* **Amounts, at five significant digits or more.** A cost basis of 655.30 is the
-  owner's. A test fixture using 1000.00 is not -- and the threshold is what tells
-  them apart without a hand-maintained allowlist that would rot. Three-digit
-  values like 2.00 are deliberately not searched: a commission that size is
-  attributable to nobody once the ISIN beside it is synthetic.
+* **Instrument names** identify it just as well. Matched as whole phrases and as
+  distinctive tokens, because a two-word name leaks through either word alone.
+* **Amounts, at five significant digits or more.** A cost basis carried to the
+  cent is the owner's; a fixture using a round thousand is not, and the
+  threshold is what separates them without a hand-maintained allowlist that
+  would rot. Small round values are deliberately not searched: a two-euro
+  commission is attributable to nobody once the ISIN beside it is synthetic.
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ _PRODUCT_COLUMN = {"Transactions.csv": 2, "Account.csv": 3, "Portfolio.csv": 0}
 
 #: Legal suffixes, share classes, fund boilerplate and ordinary English. None of
 #: these identifies a holding: every listed company is a "CORP" and the word
-#: "states" appears in prose. What is left after removing them -- MERIDIAN,
-#: ORION, APEX -- is the part that names something the owner actually owns.
+#: "states" appears in ordinary prose. What survives the filter is the part of a
+#: name that actually picks out one instrument.
 _NOT_A_HOLDING = {
     "acc", "adr", "and", "bankaccount", "cash", "class", "com", "company", "corp",
     "corporation", "dist", "etf", "eur", "euro", "flatex", "ftx", "fund", "group",
@@ -83,8 +83,8 @@ def _tracked_files() -> list[Path]:
 def _significant_digits(value: Decimal) -> int:
     """Digits that carry information: leading and trailing zeros carry none.
 
-    1000.00 is one significant digit and belongs to nobody; 655.30 is five and
-    belongs to the owner.
+    A round thousand is one significant digit and belongs to nobody; a price
+    carried to the cent is five or more and belongs to the owner.
     """
     return len(f"{value:f}".replace("-", "").replace(".", "").strip("0"))
 
@@ -130,9 +130,9 @@ def _real_values() -> tuple[set[str], set[str], set[str]]:
 def _corporate_action_dates() -> set[str]:
     """Dates of the suppressed corporate-action pairs, in both spellings.
 
-    A "10-for-1 split on <date>" names the instrument to anyone who follows
-    markets, even with every name and ISIN replaced -- so the date is identifying
-    on its own. Only corporate-action dates are checked, not every trade date: a
+    A "10-for-1 split on <date>" names the instrument to anyone familiar with
+    listed equities, even with every name and ISIN replaced -- so the date is
+    identifying on its own. Only corporate-action dates are checked, not every trade date: a
     date the owner happened to buy on identifies nothing, and searching for all of
     them would flag the plan filenames and every changelog entry.
     """
