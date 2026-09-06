@@ -25,7 +25,13 @@ import pytest
 from sqlmodel import Session, select
 
 from app.db import create_engine_and_tables
-from app.ingest.prices import FetchResult, Providers, UnresolvedSymbols, fetch_prices
+from app.ingest.prices import (
+    _FX_OVERLAP,
+    FetchResult,
+    Providers,
+    UnresolvedSymbols,
+    fetch_prices,
+)
 from app.ingest.symbols import SymbolAnswer
 from app.models.ledger import Account, ImportBatch, Transaction
 from app.models.market import FxDaily, PriceDaily
@@ -296,6 +302,9 @@ class TestBackfill:
 
 class TestIncremental:
     def test_a_second_run_asks_only_for_what_the_cache_lacks(self, engine) -> None:
+        """The overlap here is Yahoo's to apply (`YahooPrices._OVERLAP`), not
+        this module's: a caller that subtracted one too would double it, so the
+        exact newest cached date must reach the provider unmodified."""
         # Answered rather than probed: resolve_symbols re-probes an unanswered
         # instrument on every call (it has no memory of a prior run), which
         # would call `full_series` on this same stub during resolution and
@@ -308,12 +317,52 @@ class TestIncremental:
         kit = providers(resolver=StubResolver({}), prices=stub, fx=StubFx())
 
         fetch_prices(engine, kit, answers=answers, now=NOW, full=False)
+        with Session(engine) as session:
+            newest_cached = max(
+                row.price_date
+                for row in session.exec(
+                    select(PriceDaily).where(PriceDaily.isin == "NL0000000001")
+                ).all()
+            )
         stub.full_calls.clear()
         stub.since_calls.clear()
         fetch_prices(engine, kit, answers=answers, now=NOW, full=False)
 
         assert stub.since_calls, "the second run must be incremental"
         assert stub.full_calls == []
+        # Exactly the newest cached date, not that date minus some overlap:
+        # doubling Yahoo's own overlap would silently widen the window on
+        # every incremental run.
+        assert stub.since_calls == [("EXA.AS", newest_cached)]
+
+    def test_the_incremental_fx_window_reaches_back_past_the_newest_cached_rate(
+        self, engine
+    ) -> None:
+        """Unlike Yahoo, `EcbRates.series` carries no overlap of its own: it
+        answers exactly the `[start, end]` window it is given. An ECB reference
+        rate is rarely but not never corrected, and a window that begins
+        exactly at the newest cached date could never see such a correction."""
+        ledger(engine, [("US0000000404", BOUGHT_ON, "10", "20.00", "USD")])
+        fx = StubFx()
+        answers = {"US0000000404": SymbolAnswer("US0000000404", "EXU", "")}
+        kit = providers(
+            resolver=StubResolver({}),
+            prices=StubPrices({"EXU": five_years_of("EXU", "USD", "20.00")}),
+            fx=fx,
+        )
+
+        fetch_prices(engine, kit, answers=answers, now=NOW, full=False)
+        with Session(engine) as session:
+            newest_cached_rate = max(
+                row.rate_date for row in session.exec(select(FxDaily)).all()
+            )
+        fx.calls.clear()
+        fetch_prices(engine, kit, answers=answers, now=NOW, full=False)
+
+        assert len(fx.calls) == 1
+        _, _, start, _ = fx.calls[0]
+        assert start < newest_cached_rate
+        assert start == newest_cached_rate - _FX_OVERLAP
 
     def test_full_refetches_the_whole_history(self, engine) -> None:
         """M2-9's escape hatch, for when a provider revises its history."""

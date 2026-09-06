@@ -24,12 +24,20 @@ answered from the cache rather than told the data does not exist.
 request no free provider has a reason to keep serving. `--full` exists for the
 day a provider revises its history.
 
-The overlap that protects against a provider revising its most recent bars is
-NOT applied here: it lives once, in `providers/yahoo.py` (`YahooPrices._OVERLAP`),
-because the provider is the layer that knows how far back it revises. Subtracting
-it again on this side would double it silently, and every provider would carry a
-different true window than the one this module thinks it asked for. The newest
-cached date is passed straight through as `since`.
+The overlap that protects against a revised recent value is owned by whichever
+side actually revises, and the two caches do not agree on who that is.
+
+* **Prices:** `YahooPrices.series_since` already subtracts its own `_OVERLAP`
+  before asking Yahoo for anything (Yahoo revises its most recent bars, and the
+  provider is the layer that knows how far back). This module passes the raw
+  newest-cached date straight through as `since` -- subtracting an overlap
+  again here would double it silently.
+* **FX:** `EcbRates.series` fetches exactly the `[start, end]` window it is
+  given and applies no overlap of its own -- Frankfurter/ECB serves precisely
+  what is asked for. An ECB reference rate is rarely but not never corrected,
+  and an incremental window that started exactly at the newest cached date
+  could never see such a correction. `_FX_OVERLAP` below is this module's own
+  guard, applied only on the FX side.
 """
 
 from __future__ import annotations
@@ -67,6 +75,14 @@ from app.providers.manual import ManualPrices
 from app.providers.openfigi import OpenFigiResolver
 from app.providers.yahoo import YahooPrices
 from app.settings import Settings
+
+#: How far before the newest cached rate an incremental FX fetch reaches back.
+#: `EcbRates.series` (Frankfurter) has no overlap of its own -- it serves
+#: exactly the `[start, end]` window it is asked for -- so this module has to
+#: supply the guard against a corrected reference rate itself. This is
+#: deliberately NOT mirrored on the price side: `YahooPrices.series_since`
+#: already subtracts its own overlap, and doing it again there would double it.
+_FX_OVERLAP = timedelta(days=5)
 
 
 class UnresolvedSymbols(RuntimeError):
@@ -241,9 +257,9 @@ def fetch_prices(
     with Session(engine) as session:
         for isin, symbol in sorted(report.resolved.items()):
             since = None if full else _newest_price(session, isin)
-            # The raw newest-cached date, unmodified: the provider (see
-            # `YahooPrices._OVERLAP`) is the layer that knows how far back it
-            # revises. Subtracting an overlap again here would double it.
+            # The raw newest-cached date, unmodified: `YahooPrices.series_since`
+            # already subtracts its own `_OVERLAP` before asking Yahoo for
+            # anything. Subtracting one again here would double it, silently.
             series = providers.chain.series(isin, symbol, since=since)
             if series is None or not series.points:
                 # Answered, and still unpriceable. That is `coverage: "missing"`,
@@ -264,7 +280,10 @@ def fetch_prices(
         base = _base_currency(session)
         for currency in sorted(currencies - {base}):
             newest = None if full else _newest_rate(session, currency, base)
-            start = backfill_start if newest is None else newest
+            # Unlike the price side, ECB's own series() carries no overlap:
+            # it answers exactly the window it is asked for. `_FX_OVERLAP` is
+            # this module's own guard against a corrected reference rate.
+            start = backfill_start if newest is None else newest - _FX_OVERLAP
             fx_series = providers.fx.series(currency, base, start=start, end=today)
             if fx_series is None:
                 continue
