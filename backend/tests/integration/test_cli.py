@@ -9,6 +9,8 @@ from memory is how an answer silently fails to apply.
 from __future__ import annotations
 
 import shutil
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -113,3 +115,114 @@ class TestReview:
         result = runner.invoke(app, ["review"])
         assert result.exit_code == 0
         assert "no corporate actions" in result.output.casefold()
+
+
+class TestFetchPrices:
+    """The operator's half of the symbol quarantine.
+
+    The message has to carry the ISIN verbatim and the measured ratios, because
+    those two are what the operator answers with and what they answer from. A
+    refusal that said only "could not resolve 4 instruments" would be a dead end.
+    """
+
+    def _stub(self, monkeypatch: pytest.MonkeyPatch, *, resolves_to: str | None) -> None:
+        # `app.cli` binds `build_providers` by name at import time
+        # (`from app.ingest.prices import ... build_providers ...`), so it is
+        # `app.cli.build_providers` -- not `app.ingest.prices.build_providers`
+        # -- that the command actually calls. Patching the source module would
+        # leave the CLI's own reference pointing at the real one, and this test
+        # would make real network calls to OpenFIGI and Yahoo.
+        import app.cli as cli_module
+        from app.ingest.prices import Providers
+        from app.providers.base import PricePoint, PriceSeries, SymbolCandidate
+        from app.providers.chain import PriceChain
+        from app.providers.manual import ManualPrices
+
+        class Resolver:
+            name = "stub"
+
+            def candidates(self, isin: str) -> tuple[SymbolCandidate, ...]:
+                return (
+                    SymbolCandidate(
+                        symbol="EXA2S.DE", name="Example 2x Short", exchange_code="GY",
+                        source="stub",
+                    ),
+                )
+
+        class Prices:
+            name = "stub"
+
+            def full_series(self, symbol: str) -> PriceSeries | None:
+                close = "20.00" if resolves_to == symbol else "6.00"
+                return PriceSeries(
+                    symbol=symbol,
+                    currency="EUR",
+                    source="stub",
+                    points=tuple(
+                        PricePoint(
+                            on=date(2025, 1, day),
+                            close_unadjusted=Decimal(close),
+                            close_adjusted=Decimal(close),
+                        )
+                        for day in (6, 7, 8)
+                    ),
+                )
+
+            def series_since(self, symbol: str, since: date) -> PriceSeries | None:
+                return self.full_series(symbol)
+
+        class Fx:
+            name = "stub-fx"
+
+            def series(self, from_ccy, to_ccy, *, start, end):
+                return None
+
+        prices = Prices()
+        monkeypatch.setattr(
+            cli_module,
+            "build_providers",
+            lambda settings: Providers(
+                resolver=Resolver(),
+                prices=prices,
+                chain=PriceChain([prices], ManualPrices(_by_isin={})),
+                fx=Fx(),
+            ),
+        )
+
+    def test_refuses_and_exits_non_zero_while_a_symbol_is_open(
+        self, export: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner.invoke(
+            app, ["import", str(export), "--resolutions", str(_resolutions(tmp_path, RESOLVE_BOTH))]
+        )
+        self._stub(monkeypatch, resolves_to=None)
+        monkeypatch.setenv("INSTRUMENT_SYMBOLS_PATH", str(tmp_path / "absent.yaml"))
+        get_settings.cache_clear()
+
+        result = runner.invoke(app, ["fetch-prices"])
+
+        assert result.exit_code == 1
+        assert "must be answered" in result.stdout
+        # The stub's candidate symbol appearing in the refusal is the proof
+        # that the stub was actually consulted -- not merely that the command
+        # exited 1, which a stray real network failure could also produce.
+        assert "EXA2S.DE" in result.stdout
+        assert "executed price / provider close" in result.stdout
+
+    def test_the_refusal_prints_a_paste_ready_answer_block(
+        self, export: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner.invoke(
+            app, ["import", str(export), "--resolutions", str(_resolutions(tmp_path, RESOLVE_BOTH))]
+        )
+        self._stub(monkeypatch, resolves_to=None)
+        monkeypatch.setenv("INSTRUMENT_SYMBOLS_PATH", str(tmp_path / "absent.yaml"))
+        get_settings.cache_clear()
+
+        result = runner.invoke(app, ["fetch-prices"])
+
+        assert "symbols:" in result.stdout
+        assert "  - isin: " in result.stdout
+
+    def test_symbols_says_so_when_nothing_is_waiting(self) -> None:
+        assert runner.invoke(app, ["symbols"]).stdout.strip() == "no unresolved symbols"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -22,8 +24,12 @@ from app.ingest.importer import (
     import_degiro_export,
     undo_batch,
 )
+from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_prices
 from app.ingest.reconcile import reconcile
+from app.ingest.symbols import MANUAL_ANSWER, ResolutionReport, load_symbol_answers
 from app.models.ledger import CorporateActionReview, ImportBatch
+from app.models.market import SymbolReview
+from app.providers.base import ProviderError
 from app.settings import get_settings
 
 app = typer.Typer(help="Portfolio tracker maintenance commands.")
@@ -219,6 +225,105 @@ def rebuild_command(
         f"{result.method}: {result.lots} open lots, {result.closures} closures, "
         f"charges {result.charges_attributed} == ledger {result.charges_in_ledger}"
     )
+
+
+def _report_symbol_quarantine(report: ResolutionReport, answers_path: Path) -> None:
+    """Print the open questions and a paste-ready answer for them.
+
+    The same shape as `_report_quarantine`, and for the same reason: an operator
+    retyping a key from memory produces an answer that parses cleanly and applies
+    to nothing. Here the key is the ISIN, and the evidence is the measured ratio
+    of their own executed prices against each candidate -- which is the only thing
+    that distinguishes the right ticker from a leveraged product on the same
+    underlying.
+    """
+    typer.echo(
+        f"{len(report.pending)} instrument(s) must be answered before prices can be fetched."
+    )
+    typer.echo(f"No prices were written. Add each ISIN to {answers_path} and run this again.\n")
+    for item in report.pending:
+        typer.echo(f"  {item.isin}  {item.product_name}  (trades in {item.trade_currency})")
+        if not item.verdicts:
+            typer.echo("      no candidate ticker was found at all")
+        for verdict in item.verdicts:
+            ratios = ", ".join(f"{ratio:.2f}" for ratio in verdict.ratios) or "none measured"
+            typer.echo(f"      {verdict.symbol}: {verdict.reason}")
+            typer.echo(f"          executed price / provider close: {ratios}")
+    typer.echo("\nA correct ticker sits near 1.00 on every trade.")
+    typer.echo(f"Answer with a ticker, or with {MANUAL_ANSWER!r} to price it from the CSV.\n")
+    typer.echo("symbols:")
+    for item in report.pending:
+        typer.echo(f"  - isin: {item.isin}")
+        typer.echo("    symbol: ")
+
+
+@app.command("fetch-prices")
+def fetch_prices_command(
+    full: Annotated[
+        bool,
+        typer.Option(
+            "--full", help="Refetch the whole five-year history, not only what is missing."
+        ),
+    ] = False,
+) -> None:
+    """Fill the price and FX cache (M2 spec section 4).
+
+    Refuses, writing nothing, while any instrument's symbol is unanswered. Exits
+    1 on a refusal and 2 when a provider could not be reached, so this can gate a
+    script.
+    """
+    settings = get_settings()
+    answers_path = Path(settings.instrument_symbols_path)
+    engine = create_engine_and_tables(settings.database_url)
+
+    try:
+        result = fetch_prices(
+            engine,
+            build_providers(settings),
+            answers=load_symbol_answers(answers_path),
+            now=datetime.now(tz=UTC),
+            full=full,
+        )
+    except UnresolvedSymbols as refused:
+        _report_symbol_quarantine(refused.report, answers_path)
+        raise typer.Exit(code=1) from refused
+    except ProviderError as unreachable:
+        typer.echo(str(unreachable), err=True)
+        raise typer.Exit(code=2) from unreachable
+
+    breakdown = ", ".join(f"{name}={count}" for name, count in sorted(result.sources.items()))
+    typer.echo(
+        f"{result.instruments} instruments: {result.price_rows} price rows "
+        f"({breakdown or 'none'}), {result.fx_rows} FX rows"
+    )
+    if result.earliest is not None:
+        typer.echo(f"cache reaches back to {result.earliest.isoformat()}")
+
+
+@app.command("symbols")
+def symbols_command() -> None:
+    """Show the symbol review queue (M2 spec section 6.3).
+
+    Rebuilt by every `fetch-prices` run, so this always describes the export as
+    it stands rather than a history of what was once asked.
+    """
+    engine = create_engine_and_tables(get_settings().database_url)
+    with Session(engine) as session:
+        rows = session.exec(
+            select(SymbolReview).order_by(SymbolReview.isin)
+        ).all()
+
+    if not rows:
+        typer.echo("no unresolved symbols")
+        return
+
+    for row in rows:
+        typer.echo(f"OPEN  {row.isin}  {row.product_name}  ({row.trade_currency})")
+        for candidate in json.loads(row.candidates):
+            ratios = ", ".join(candidate["ratios"]) or "none measured"
+            typer.echo(f"        {candidate['symbol']}: {candidate['reason']}  [{ratios}]")
+
+    typer.echo(f"\n{len(rows)} instrument(s) still open")
 
 
 if __name__ == "__main__":
