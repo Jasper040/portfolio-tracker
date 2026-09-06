@@ -11,5 +11,8 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  // vitest.setup.ts is in the program so its "@testing-library/jest-dom" import
+  // is seen: that module augments vitest's Assertion type, and without it tsc
+  // rejects every toBeInTheDocument even though the tests themselves pass.
+  "include": ["src", "vitest.setup.ts"]
 }

@@ -49,6 +49,10 @@ cd frontend
 npm install
 ```
 
+That installs the component-test environment along with everything else:
+`jsdom`, `@testing-library/react` and `@testing-library/jest-dom`. No separate
+step and no global install — if `npm test` runs, the harness is ready.
+
 ---
 
 ## 2. Running it
@@ -194,8 +198,8 @@ the real export under `pytest -m realdata`.
 
 ```powershell
 cd backend
-python -m pytest                 # 227 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: 24 tests against the gitignored real exports.
+python -m pytest                 # 304 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 35 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.
@@ -203,6 +207,17 @@ python -m mypy app               # Strict type check.
 
 `pytest` excludes `realdata` via `addopts` in `pyproject.toml`, so a plain run
 never depends on whether the owner's gitignored exports happen to be on disk.
+
+The `realdata` suite states no figure of its own. `tests/integration/realdata_subject.py`
+reads the export at run time and works out what to assert — which instrument
+split, in what ratio, which lot it restated, what the broker charged — so the
+repo holds none of it. Adding an expected value there means adding a derivation,
+never a literal.
+
+One of those tests is a guard rather than a check on behaviour:
+`test_no_real_data_committed.py` reads the export, derives what "real" means from
+it, and fails if any of it appears in a tracked file. If you paste a figure out
+of a CSV into a test or a comment, that is what will tell you.
 
 > **Note on `ruff format`.** Five pre-existing files (`app/api/schemas.py`,
 > `app/domain/money.py`, `app/ingest/importer.py`, `tests/integration/test_api.py`,
@@ -215,15 +230,51 @@ never depends on whether the owner's gitignored exports happen to be on disk.
 
 ```powershell
 cd frontend
-npm test             # 50 Vitest tests over lib/
+npm test             # 93 Vitest tests: lib/, api/ and the Lots component
 npm run test:watch   # same, in watch mode
 npm run typecheck    # tsc --noEmit, strict + noUncheckedIndexedAccess
 npm run build        # tsc -b && vite build -> dist/
 ```
 
-Tests cover `lib/` only, which is where the logic worth testing lives: lot
-matching, TWR/MWR, the counterfactual and the two money-formatting paths. The
-components are presentational and are covered by typecheck plus the build.
+Two kinds of test share one runner.
+
+**Pure tests** — `lib/`, `api/` — run in Node: lot matching, TWR/MWR, the
+counterfactual, the money-formatting paths and the API client's URL and error
+handling.
+
+**Component tests** — `screens/*.test.tsx` — render a real component into jsdom
+with `@testing-library/react`. `vite.config.ts` sets the default environment to
+`node` and each component test opts in with a docblock:
+
+```tsx
+/**
+ * @vitest-environment jsdom
+ */
+```
+
+That is deliberate rather than fussy. jsdom costs roughly a second per file to
+start, and the pure suites are the bulk of the tests; imposing a DOM on all of
+them to serve a handful would make the fast feedback loop slow for no benefit.
+
+`vitest.setup.ts` runs for every file and does two things that are easy to
+forget and painful to debug: it registers the `jest-dom` matchers, and it calls
+`cleanup()` after each test. Vitest shares one jsdom document across the tests in
+a file, so without the unmount a second render finds two copies of everything and
+`getByText` throws "found multiple elements" on a test that is actually fine.
+
+`tsconfig.json` includes `vitest.setup.ts` in the program. That import is what
+augments vitest's `Assertion` type with `toBeInTheDocument`; leave it out and
+`tsc` rejects every component test while `npm test` passes.
+
+**What component tests are for here.** Every case in `screens/Lots.test.tsx` is
+one a review caught by reading rather than by running, because until the harness
+existed there was no way to run a component at all. Three shipped as real
+defects: a closures table showing one of its three charge columns, so rows
+displayed a gross, a charge and a net that did not add up; a fully-sold portfolio
+rendering "No lots or closures yet" while hiding every closure it had loaded; and
+a return column parsing a ledger figure through `Number()`. Prefer a test that
+pins a behaviour someone could plausibly get wrong over one that asserts a
+component renders.
 
 There is no frontend linter configured. `npm run typecheck` and `npm test` are
 the automated gates.
@@ -242,17 +293,22 @@ backend/app/
   cli.py        import / batches / undo / reconcile
 
 frontend/src/
-  api/          Live client for /api/transactions
+  api/          Live client for /api/transactions, /api/lots, /api/closures
   lib/          Pure domain logic: lot matching, TWR/MWR, formatting, tokens
   portfolio/    Data layer. fixtures.ts is MODELLED data; provider.ts is the seam
   components/   Chart primitives, UI primitives, layout
-  screens/      The nine screens
+  screens/      The ten screens, and the component tests for the live ones
+
+frontend/
+  vite.config.ts    Dev server, and the Vitest environment/setup wiring
+  vitest.setup.ts   jest-dom matchers plus the per-test unmount
 ```
 
-Only the **Transactions** screen reads the live API. The other eight are computed
-from `frontend/src/portfolio/fixtures.ts` and are badged `MODELLED` in the UI.
-When the M1 endpoints land, the change is `provider.ts` plus deleting the fixture
-— nothing in `screens/` or `components/` imports the fixture directly.
+**Transactions** and **Lots** read the live API. The other eight are computed from
+`frontend/src/portfolio/fixtures.ts` and are badged `MODELLED` in the UI — the
+badge is driven by `LEDGER_BACKED` in `navigation.ts`, so a screen stops being
+badged the moment it is added to that set. Adding a screen to it without pointing
+it at a real endpoint is the one way to make the UI lie about its own provenance.
 
 > **Never name a source directory `data/`.** `.gitignore` has a bare `data/` rule
 > guarding real broker exports, and it matches at any depth — a
