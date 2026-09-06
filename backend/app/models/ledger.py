@@ -198,3 +198,53 @@ class Transaction(SQLModel, table=True):
 
     raw_json: str
     note: str | None = None
+
+
+class PositionDaily(SQLModel, table=True):
+    """Shares held in one instrument at the end of one day. Derived, not ledger.
+
+    **No `method` column, on purpose.** FIFO, LIFO and HIFO disagree about which
+    lot a sale consumed and therefore about realised P&L, but they cannot
+    disagree about how many shares are left -- M1 asserts exactly that in
+    `test_every_method_holds_the_same_shares`. A method column here would store
+    three copies of one answer, and the day two of them differed there would be
+    no way to say which was right.
+
+    Rows exist only for days the position was non-zero. An absent row means "not
+    held", which is a different statement from "held zero" and reads correctly in
+    the valuation join without a special case.
+
+    Quantities are post-split, because the fills they come from have already been
+    through `apply_splits`.
+    """
+
+    __tablename__ = "position_daily"
+    __table_args__ = (
+        UniqueConstraint("position_date", "isin", name="uq_position_daily_date_isin"),
+    )
+
+    id: UUID = Field(primary_key=True)
+    position_date: date = Field(index=True)
+    isin: str = Field(index=True)
+    quantity: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+
+
+class CashDaily(SQLModel, table=True):
+    """The cash balance at the end of one day. Derived, not ledger.
+
+    A running sum of `net_base`, which is broker truth (Sec 5.4) -- so this is
+    pure ledger arithmetic and belongs on the derived side of the line, even
+    though it ends up in the same chart as a fetched price.
+
+    It exists because M2-4 makes portfolio value **net**: holdings at market plus
+    cash, so the account's debit balance reduces the total rather than being
+    quietly left out. Cash is reported as its own component so a reader can see
+    which half moved.
+    """
+
+    __tablename__ = "cash_daily"
+    __table_args__ = (UniqueConstraint("cash_date", name="uq_cash_daily_date"),)
+
+    id: UUID = Field(primary_key=True)
+    cash_date: date = Field(index=True)
+    balance_base: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
