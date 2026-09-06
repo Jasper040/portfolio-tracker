@@ -6,7 +6,7 @@ import pytest
 from sqlmodel import Session, select
 
 from app.db import create_engine_and_tables, get_session
-from app.models.ledger import Account, ImportBatch, Transaction
+from app.models.ledger import Account, ImportBatch, Lot, LotClosure, Transaction
 
 
 def test_get_session_returns_working_session() -> None:
@@ -167,3 +167,126 @@ def test_orphan_foreign_keys_are_rejected() -> None:
         )
         with pytest.raises(IntegrityError):
             s.commit()
+
+
+def test_value_base_survives_the_round_trip_exactly() -> None:
+    """Same discipline as `net_base`/`price_local`: `DecimalString`, not a float
+    column. Value equality alone would not catch a lost scale, so pin the string
+    representation -- see the ledger's `value_base` comment for why this column
+    is stored rather than derived from `net_base - fee_base - autofx_fee_base`."""
+    engine = create_engine_and_tables("sqlite://")
+    account_id = uuid4()
+    batch_id = uuid4()
+    with Session(engine) as s:
+        s.add(Account(id=account_id, broker="degiro", name="Main", base_currency="EUR"))
+        s.add(
+            ImportBatch(
+                id=batch_id,
+                source="degiro",
+                filename="Transactions.csv",
+                file_sha256="abc",
+                parser_version="1",
+                imported_at=datetime.now(timezone.utc),
+                row_count=1,
+                inserted_count=1,
+            )
+        )
+        s.add(
+            Transaction(
+                id=uuid4(),
+                account_id=account_id,
+                import_batch_id=batch_id,
+                source="degiro",
+                source_ref="ref-value-base",
+                txn_type="BUY",
+                trade_date=date(2024, 5, 22),
+                isin="US0000000901",
+                quantity=Decimal("10"),
+                price_local=Decimal("65.5300"),
+                currency_local="EUR",
+                fee_base=Decimal("-2.00"),
+                tax_base=Decimal("0.00"),
+                autofx_fee_base=Decimal("-2.18"),
+                gross_local=Decimal("-655.30"),
+                value_base=Decimal("-655.30"),
+                net_base=Decimal("-659.48"),
+                is_economic=True,
+                closure_reason="DECISION",
+                raw_json='{"a": 1}',
+            )
+        )
+        s.commit()
+
+    with Session(engine) as s:
+        txn = s.exec(select(Transaction)).one()
+        assert isinstance(txn.value_base, Decimal)
+        assert str(txn.value_base) == "-655.30"
+
+
+class TestDerivedTables:
+    """`lot` and `lot_closure` are NOT the ledger.
+
+    They are a projection of it under one lot method, dropped and rewritten by every
+    `rebuild()`. The append-only rule protects facts; these are conclusions, and a
+    conclusion that cannot be recomputed from scratch is a conclusion nobody can
+    check.
+    """
+
+    def test_a_lot_stores_its_basis_and_charges_apart(self) -> None:
+        engine = create_engine_and_tables("sqlite://")
+        with Session(engine) as session:
+            session.add(
+                Lot(
+                    id=uuid4(),
+                    method="FIFO",
+                    isin="US0000000901",
+                    source_ref="abc",
+                    opened_on=date(2024, 5, 22),
+                    quantity=Decimal("10"),
+                    price=Decimal("65.530"),
+                    cost_basis=Decimal("655.30"),
+                    commission=Decimal("2.00"),
+                    autofx=Decimal("2.18"),
+                    tax=Decimal("0.00"),
+                )
+            )
+            session.commit()
+            lot = session.exec(select(Lot)).one()
+        assert lot.cost_basis == Decimal("655.30")
+        assert lot.commission + lot.autofx == Decimal("4.18")
+
+    def test_decimals_survive_the_round_trip_exactly(self) -> None:
+        """`DecimalString`, same as the ledger. A float column would make 65.530
+        come back as 65.53000000000001."""
+        engine = create_engine_and_tables("sqlite://")
+        with Session(engine) as session:
+            session.add(
+                Lot(
+                    id=uuid4(), method="FIFO", isin="X", source_ref="a",
+                    opened_on=date(2024, 5, 22), quantity=Decimal("10"),
+                    price=Decimal("65.530"), cost_basis=Decimal("655.30"),
+                    commission=Decimal("0.00"), autofx=Decimal("0.00"), tax=Decimal("0.00"),
+                )
+            )
+            session.commit()
+            assert session.exec(select(Lot)).one().price == Decimal("65.530")
+
+    def test_a_closure_stores_gross_and_net_apart(self) -> None:
+        """The three numbers the owner asked for, persisted rather than recomputed
+        at read time -- so the API cannot disagree with the rebuild that wrote it."""
+        engine = create_engine_and_tables("sqlite://")
+        with Session(engine) as session:
+            session.add(
+                LotClosure(
+                    id=uuid4(), method="FIFO", isin="X", lot_source_ref="a",
+                    sale_source_ref="b", opened_on=date(2024, 1, 1),
+                    closed_on=date(2024, 6, 1), quantity=Decimal("5"),
+                    open_price=Decimal("10.00"), close_price=Decimal("20.00"),
+                    gross_pnl=Decimal("50.00"), commission=Decimal("5.00"),
+                    autofx=Decimal("0.00"), tax=Decimal("0.00"), pnl=Decimal("45.00"),
+                    holding_days=152,
+                )
+            )
+            session.commit()
+            closure = session.exec(select(LotClosure)).one()
+        assert closure.gross_pnl - closure.commission == closure.pnl

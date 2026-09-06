@@ -176,6 +176,7 @@ def insert_rows(
                     tax_base=row.tax_base,
                     autofx_fee_base=row.autofx_fee_base,
                     gross_local=row.gross_local,
+                    value_base=row.value_base,
                     net_base=row.net_base,
                     order_ref=row.order_ref,
                     is_economic=row.is_economic and row.source_ref not in reasons,

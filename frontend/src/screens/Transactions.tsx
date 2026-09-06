@@ -1,6 +1,8 @@
-/** The raw ledger. The ONE screen reading real data.
+/** The raw ledger, row by row. One of the two screens reading real data -- Lots
+ *  is the other, and it reads the same ledger one level of aggregation up. The
+ *  remaining eight of the ten are still modelled and say so.
  *
- *  Two things make this screen different from the other eight, and both are
+ *  Two things make this screen different from the modelled eight, and both are
  *  deliberate:
  *
  *  1. Every money value here is rendered with `decimal*` formatters, which

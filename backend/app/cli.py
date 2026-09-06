@@ -9,7 +9,9 @@ from uuid import UUID
 import typer
 from sqlmodel import Session, select
 
+from app.analytics.rebuild import ChargeMismatch, rebuild
 from app.db import create_engine_and_tables
+from app.domain.lots import LOT_METHODS
 from app.ingest.corporate_actions import CorporateAction
 from app.ingest.degiro.account_csv import parse_account_csv
 from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
@@ -187,6 +189,36 @@ def reconcile_command(export_dir: Path) -> None:
         typer.echo(f"\n{len(report.failures)} invariant(s) failed", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"\nall {len(report.invariants)} invariants green")
+
+
+@app.command("rebuild")
+def rebuild_command(
+    method: Annotated[
+        str, typer.Option("--method", help="FIFO, LIFO or HIFO. Defaults to the configured one.")
+    ] = "",
+) -> None:
+    """Recompute lots and closures from the ledger (design doc Sec 11.2).
+
+    Derived tables only -- the ledger is untouched. Exits non-zero if attributed
+    charges do not equal the ledger's, having written nothing.
+    """
+    settings = get_settings()
+    chosen = (method or settings.lot_method).upper()
+    if chosen not in LOT_METHODS:
+        typer.echo(f"unknown method {chosen!r}; expected one of {list(LOT_METHODS)}", err=True)
+        raise typer.Exit(code=2)
+
+    engine = create_engine_and_tables(settings.database_url)
+    try:
+        result = rebuild(engine, chosen)
+    except ChargeMismatch as mismatch:
+        typer.echo(str(mismatch), err=True)
+        raise typer.Exit(code=1) from mismatch
+
+    typer.echo(
+        f"{result.method}: {result.lots} open lots, {result.closures} closures, "
+        f"charges {result.charges_attributed} == ledger {result.charges_in_ledger}"
+    )
 
 
 if __name__ == "__main__":

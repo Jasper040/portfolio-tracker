@@ -94,6 +94,21 @@ def test_trade_time_and_autofx_fee_survive_the_round_trip() -> None:
     assert txn.autofx_fee_base == Decimal("-0.23")
 
 
+def test_value_base_survives_the_round_trip() -> None:
+    """`Value EUR` (golden row 3: "-90,91") must reach the ledger verbatim -- the
+    importer used to drop it on the way from `NormalisedRow` into `Transaction`."""
+    engine = _engine()
+    account_id = ensure_default_account(engine)
+    import_transactions_file(engine, GOLDEN, account_id)
+    with Session(engine) as s:
+        txn = s.exec(
+            select(Transaction).where(
+                Transaction.order_ref == "aaaa0002-0000-0000-0000-000000000002"
+            )
+        ).one()
+    assert txn.value_base == Decimal("-90.91")
+
+
 def test_undo_removes_exactly_one_batch() -> None:
     engine = _engine()
     account_id = ensure_default_account(engine)

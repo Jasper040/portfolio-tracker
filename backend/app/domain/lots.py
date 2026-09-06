@@ -13,11 +13,14 @@ deterministic.
 Everything is `Decimal`. Quantities subtract exactly, so a fully consumed lot lands
 on exactly zero and the epsilon comparison a float implementation needs disappears.
 
-Fees are attributed in a second pass rather than inline, because the invariant
-`Σ attributed fees == Σ ledger fees` (Sec 11.2) cannot be met by dividing as you go:
-a lot split three ways loses a cent to rounding on every closure. Matching first,
-then apportioning each transaction's fee across everything it touched, makes the
-sum exact by construction.
+Charges are attributed in a second pass rather than inline, because the invariant
+`Σ attributed charges == Σ ledger charges` (Sec 11.2) cannot be met by dividing as
+you go: a lot split three ways loses a cent to rounding on every closure. Matching
+first, then apportioning each transaction's charges across everything it touched,
+makes the sum exact by construction. Charges are never capitalised into the cost
+basis (Sec 6.4): basis is quantity times price, full stop, and charges are reported
+alongside it so what the stock did, what the broker took, and what is left all stay
+visible as three separate numbers.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from app.domain.fees import apportion
+from app.domain.charges import Charges, apportion_charges
 
 LotMethod = Literal["FIFO", "LIFO", "HIFO"]
 
@@ -38,11 +41,11 @@ _DAYS_PER_YEAR = Decimal("365")
 
 @dataclass(frozen=True, slots=True)
 class LotTransaction:
-    """One economic buy or sell, with its order-level fee already attributed to it.
+    """One economic buy or sell, with its order-level charges already attributed.
 
-    Grouping fill rows into orders and splitting an order's fee across its fills
-    happens upstream in `domain.fees`; by the time a transaction reaches the matcher
-    its `fees` are its own.
+    Grouping fill rows into orders and splitting an order's charges across its fills
+    happens upstream in `domain.orders`; by the time a transaction reaches the
+    matcher its `charges` are its own.
     """
 
     id: str
@@ -50,23 +53,28 @@ class LotTransaction:
     side: Literal["BUY", "SELL"]
     quantity: Decimal
     price: Decimal
-    fees: Decimal
+    charges: Charges
 
 
 @dataclass(frozen=True, slots=True)
 class OpenLot:
-    """Purchase quantity still held, with the fees belonging to that quantity."""
+    """Purchase quantity still held, with the charges belonging to that quantity."""
 
     id: str
     opened_on: date
     quantity: Decimal
     price: Decimal
-    fees: Decimal
+    charges: Charges
 
     @property
-    def cost(self) -> Decimal:
-        """Cost basis. Buy fees capitalise into the lot at open (Sec 6.4)."""
-        return self.quantity * self.price + self.fees
+    def cost_basis(self) -> Decimal:
+        """What the shares cost. Charges are NOT capitalised (Sec 6.4).
+
+        Named `cost_basis` rather than `cost` deliberately: the old name meant
+        price-plus-fees, and a silent change of meaning behind an unchanged name is
+        how a wrong number survives a refactor.
+        """
+        return self.quantity * self.price
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,18 +86,26 @@ class Closure:
     """
 
     lot_id: str
+    #: The SALE's id. A closure is a pair, and carrying only the buy would leave
+    #: half of it untraceable back to the ledger.
+    sale_id: str
     opened_on: date
     open_price: Decimal
     closed_on: date
     close_price: Decimal
     quantity: Decimal
-    #: Pro-rata fees from BOTH legs of the round trip.
-    fees: Decimal
+    #: Pro-rata charges from BOTH legs of the round trip.
+    charges: Charges
+
+    @property
+    def gross_pnl(self) -> Decimal:
+        """What the stock did, before the broker took anything."""
+        return self.quantity * (self.close_price - self.open_price)
 
     @property
     def pnl(self) -> Decimal:
-        """Realised P&L in base currency, net of both legs' fees."""
-        return self.quantity * (self.close_price - self.open_price) - self.fees
+        """Realised P&L in base currency, net of both legs' charges."""
+        return self.gross_pnl - self.charges.total
 
     @property
     def holding_days(self) -> int:
@@ -128,14 +144,24 @@ class Closure:
 class MatchResult:
     closures: list[Closure]
     open_lots: list[OpenLot]
+    #: Charges from sales that matched no lot at all -- the buys predate the export
+    #: window, so there is nothing to attribute them to. They are collected rather
+    #: than discarded because `rebuild()` counts them toward the attributed side of
+    #: `Sum(attributed) == Sum(ledger)`; dropped, a single such sale would make
+    #: attributed fall short and refuse every method for the entire ledger.
+    unmatched_charges: Charges = field(default_factory=Charges.zero)
 
     @property
     def quantity(self) -> Decimal:
         return sum((lot.quantity for lot in self.open_lots), Decimal(0))
 
     @property
-    def cost(self) -> Decimal:
-        return sum((lot.cost for lot in self.open_lots), Decimal(0))
+    def cost_basis(self) -> Decimal:
+        return sum((lot.cost_basis for lot in self.open_lots), Decimal(0))
+
+    @property
+    def charges(self) -> Charges:
+        return sum((lot.charges for lot in self.open_lots), Charges.zero())
 
     @property
     def realised(self) -> Decimal:
@@ -144,7 +170,7 @@ class MatchResult:
 
 @dataclass(slots=True)
 class _WorkingLot:
-    """A lot mid-match. Remembers the quantity it was bought with, so fees can be
+    """A lot mid-match. Remembers the quantity it was bought with, so charges can be
     apportioned against the original rather than the dwindling balance."""
 
     transaction: LotTransaction
@@ -189,7 +215,7 @@ def match_lots(transactions: list[LotTransaction], method: LotMethod) -> MatchRe
 
     working: list[_WorkingLot] = []
     matches: list[_Match] = []
-    #: Closure indices produced by each sale, so its fee can be split across them.
+    #: Closure indices produced by each sale, so its charges can be split across them.
     sale_closures: list[tuple[LotTransaction, list[int]]] = []
 
     for txn in transactions:
@@ -219,20 +245,20 @@ def match_lots(transactions: list[LotTransaction], method: LotMethod) -> MatchRe
 
         sale_closures.append((txn, produced))
 
-    # ── Fee attribution, second pass.
+    # ── Charge attribution, second pass.
     #
-    # Each transaction's fee is split across exactly the things it touched: a buy
-    # across its closures plus whatever of it is still open, a sale across the
-    # closures it produced. Every fee is therefore accounted for exactly once, and
-    # `apportion` guarantees the parts sum to the whole.
-    closure_fees = [Decimal(0)] * len(matches)
+    # Each transaction's charges are split across exactly the things it touched: a
+    # buy across its closures plus whatever of it is still open, a sale across the
+    # closures it produced. Every charge is therefore accounted for exactly once,
+    # and `apportion_charges` guarantees the parts sum to the whole.
+    closure_charges = [Charges.zero()] * len(matches)
     open_lots: list[OpenLot] = []
 
     for lot in working:
         weights = [*lot.consumed, lot.remaining]
-        shares = apportion(lot.transaction.fees, weights)
+        shares = apportion_charges(lot.transaction.charges, weights)
         for index, share in zip(lot.closure_indices, shares, strict=False):
-            closure_fees[index] += share
+            closure_charges[index] += share
         if lot.remaining > 0:
             open_lots.append(
                 OpenLot(
@@ -240,31 +266,40 @@ def match_lots(transactions: list[LotTransaction], method: LotMethod) -> MatchRe
                     opened_on=lot.transaction.trade_date,
                     quantity=lot.remaining,
                     price=lot.transaction.price,
-                    fees=shares[-1],
+                    charges=shares[-1],
                 )
             )
 
+    unmatched = Charges.zero()
     for sale, indices in sale_closures:
         if not indices:
-            # A sale that matched nothing still cost what it cost. There is no lot
-            # to carry it, so it stays a portfolio-level cost rather than being
-            # silently dropped -- which would break the standing invariant.
+            # A sale that matched no lot at all -- its buys predate the export
+            # window, or the position was already exhausted -- still cost what it
+            # cost. There is no closure to carry those charges, so they go into
+            # `unmatched_charges` and `rebuild()` counts them toward the attributed
+            # total. Dropping them here would make attributed fall short of the
+            # ledger and refuse every method for the whole ledger, with a message
+            # blaming apportionment.
+            unmatched += sale.charges
             continue
-        shares = apportion(sale.fees, [matches[i].quantity for i in indices])
+        shares = apportion_charges(sale.charges, [matches[i].quantity for i in indices])
         for index, share in zip(indices, shares, strict=False):
-            closure_fees[index] += share
+            closure_charges[index] += share
 
     closures = [
         Closure(
             lot_id=match.lot.id,
+            sale_id=match.sale.id,
             opened_on=match.lot.trade_date,
             open_price=match.lot.price,
             closed_on=match.sale.trade_date,
             close_price=match.sale.price,
             quantity=match.quantity,
-            fees=closure_fees[i],
+            charges=closure_charges[i],
         )
         for i, match in enumerate(matches)
     ]
 
-    return MatchResult(closures=closures, open_lots=open_lots)
+    return MatchResult(
+        closures=closures, open_lots=open_lots, unmatched_charges=unmatched
+    )

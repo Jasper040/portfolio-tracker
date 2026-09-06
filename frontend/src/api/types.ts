@@ -43,3 +43,56 @@ export interface TransactionPage extends Provenance {
   limit: number;
   offset: number;
 }
+
+/** Money is a string for the same reason it is on TransactionOut: a JSON number
+ *  is an IEEE double, and rounding a cost basis to one loses the exactness the
+ *  backend's Decimal storage exists to keep. */
+export interface Lot {
+  id: string;
+  method: LotMethodTag;
+  isin: string;
+  source_ref: string;
+  opened_on: string;
+  quantity: string;
+  price: string;
+  cost_basis: string;
+  commission: string;
+  autofx: string;
+  tax: string;
+}
+
+export interface LotPage extends Provenance {
+  items: Lot[];
+  total: number;
+}
+
+export interface Closure {
+  id: string;
+  method: LotMethodTag;
+  isin: string;
+  /** Both halves of the pair. A closure is a (buy, sale) match, and carrying only
+   *  the buy would leave half of it untraceable back to the ledger rows it came
+   *  from -- see `Closure` in backend/app/domain/lots.py. */
+  lot_source_ref: string;
+  sale_source_ref: string;
+  opened_on: string;
+  closed_on: string;
+  quantity: string;
+  open_price: string;
+  close_price: string;
+  gross_pnl: string;
+  commission: string;
+  autofx: string;
+  tax: string;
+  pnl: string;
+  holding_days: number;
+  /** `null` where the figure is genuinely undefined -- a zero basis has no return,
+   *  a same-day round trip has no annualised one. Render "—", never "0%". */
+  return_pct: string | null;
+  annualised_return: string | null;
+}
+
+export interface ClosurePage extends Provenance {
+  items: Closure[];
+  total: number;
+}

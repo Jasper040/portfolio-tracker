@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
 
-from app.api import routes_transactions
+from app.api import routes_lots, routes_transactions
 from app.db import create_engine_and_tables
 from app.settings import get_settings
 
@@ -40,4 +40,5 @@ def create_app(
     )
     app.state.engine = engine
     app.include_router(routes_transactions.router)
+    app.include_router(routes_lots.router)
     return app

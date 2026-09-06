@@ -76,6 +76,77 @@ class CorporateActionReview(SQLModel, table=True):
     note: str | None = None
 
 
+class Lot(SQLModel, table=True):
+    """One open purchase lot under one lot method. Derived, not ledger.
+
+    Rewritten wholesale by every `rebuild()`, which is why it carries `method`: FIFO,
+    LIFO and HIFO produce different lots from identical rows, and a table that could
+    not say which one it holds would be a number without a provenance -- exactly
+    what Sec 9.2 exists to prevent.
+
+    Charges are stored in three columns rather than one total, and separately from
+    `cost_basis`, because Sec 6.4 says a lot must be able to report what the shares
+    cost and what the broker charged as two different answers.
+    """
+
+    __tablename__ = "lot"
+    __table_args__ = (UniqueConstraint("method", "source_ref", name="uq_lot_method_ref"),)
+
+    id: UUID = Field(primary_key=True)
+    method: str = Field(index=True)
+    isin: str = Field(index=True)
+    #: The opening transaction's `source_ref`. Ties a derived lot to the fact it came
+    #: from without a foreign key into a table that gets rewritten.
+    source_ref: str = Field(index=True)
+
+    opened_on: date = Field(index=True)
+    #: Post-split. `price` is likewise split-adjusted, so `quantity * price`
+    #: still equals `cost_basis`.
+    quantity: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    price: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    cost_basis: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+
+    commission: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    autofx: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    tax: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+
+
+class LotClosure(SQLModel, table=True):
+    """One matched (lot, sale) pair under one lot method. Derived, not ledger."""
+
+    __tablename__ = "lot_closure"
+
+    id: UUID = Field(primary_key=True)
+    method: str = Field(index=True)
+    isin: str = Field(index=True)
+    lot_source_ref: str = Field(index=True)
+    sale_source_ref: str = Field(index=True)
+
+    opened_on: date
+    closed_on: date = Field(index=True)
+    quantity: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    open_price: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    close_price: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+
+    #: What the stock did, before charges. Stored rather than recomputed at read
+    #: time so the API cannot disagree with the rebuild that wrote it.
+    gross_pnl: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    commission: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    autofx: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    tax: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    pnl: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+
+    holding_days: int
+    #: Sec 7.1 requires both on every closure. Nullable because both are genuinely
+    #: undefined in cases the matcher meets: a zero basis has no return, and a
+    #: same-day round trip or a total loss has no annualised one. NULL is the honest
+    #: answer there -- a zero would read as "no gain", which is a different claim.
+    return_pct: Decimal | None = Field(default=None, sa_column=Column(DecimalString()))
+    annualised_return: Decimal | None = Field(
+        default=None, sa_column=Column(DecimalString())
+    )
+
+
 class Transaction(SQLModel, table=True):
     """One economic event. Never updated in place; only inserted or batch-deleted."""
 
@@ -113,6 +184,12 @@ class Transaction(SQLModel, table=True):
     # so M1's per-lot cost attribution does not have to re-parse raw_json to find it.
     autofx_fee_base: Decimal | None = Field(default=None, sa_column=Column(DecimalString()))
     gross_local: Decimal | None = Field(default=None, sa_column=Column(DecimalString()))
+    # The trade value in EUR before fees (DeGiro's "Value EUR"), stored rather than
+    # derived as `net_base - fee_base - autofx_fee_base`: Sec 3.5 records that the
+    # broker's own arithmetic disagrees with itself by EUR 0.01 on 14 of 112 rows,
+    # and Sec 5.4 forbids recomputing a broker-stated figure. `domain/orders.py`
+    # divides this by quantity to get the base-currency price the lot matcher needs.
+    value_base: Decimal | None = Field(default=None, sa_column=Column(DecimalString()))
     net_base: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
 
     order_ref: str | None = Field(default=None, index=True)

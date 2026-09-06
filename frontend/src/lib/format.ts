@@ -61,18 +61,75 @@ export function pctPlain(v: number, digits = 1): string {
 
 /* ── ledger values (decimal strings — never parsed) ───────────────────────── */
 
+/** Add one to a string of decimal digits, propagating the carry leftward.
+ *
+ *  A carry that survives the leftmost digit (an all-nines string) grows the
+ *  string by one character rather than overflowing -- "999" -> "1000" -- which
+ *  is exactly the case that turns a fraction's carry into a new integer digit.
+ */
+function incrementDigits(digits: string): string {
+  const result = digits.split("");
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (result[i] !== "9") {
+      result[i] = String(Number(result[i]) + 1);
+      return result.join("");
+    }
+    result[i] = "0";
+  }
+  return `1${result.join("")}`;
+}
+
+/** Round a magnitude (no sign) to `maxDecimals` fraction digits, half away
+ *  from zero, entirely through digit-string manipulation -- never `Number()`,
+ *  which would reintroduce the float drift `decimal` exists to avoid.
+ *
+ *  Handles a carry that ripples through an all-nines fraction ("0.999" ->
+ *  "1.00") and one that pushes into a new integer digit ("89.996" -> "90.00").
+ *  Only called when `fracDigits` is longer than `maxDecimals`, so `keep`
+ *  always has exactly `maxDecimals` digits and the rounding digit always exists.
+ */
+function roundFraction(
+  intDigits: string,
+  fracDigits: string,
+  maxDecimals: number,
+): { intDigits: string; fracDigits: string } {
+  const keep = fracDigits.slice(0, maxDecimals);
+  const roundUp = fracDigits.charAt(maxDecimals) >= "5";
+  if (!roundUp) {
+    return { intDigits, fracDigits: keep };
+  }
+
+  const combined = incrementDigits(intDigits + keep);
+  if (keep.length === 0) {
+    return { intDigits: combined, fracDigits: "" };
+  }
+  return {
+    intDigits: combined.slice(0, combined.length - keep.length),
+    fracDigits: combined.slice(combined.length - keep.length),
+  };
+}
+
 /** Re-punctuate an exact decimal string for display: "1234.5" -> "1.234,50".
  *
  *  Never converts to a number, so the value shown is digit-for-digit what the
- *  ledger holds. `minDecimals` PADS with zeros; it never rounds or truncates,
- *  because dropping a digit from a broker figure would make the screen disagree
- *  with the source for no reason the reader could see.
+ *  ledger holds -- unless the caller opts into `maxDecimals`. Left unset (the
+ *  default), there is no limit: every pre-existing caller keeps its current
+ *  behaviour, because dropping a digit from a broker figure would make the
+ *  screen disagree with the source for no reason the reader could see.
+ *
+ *  Set, `maxDecimals` ROUNDS (half away from zero, via `roundFraction` above)
+ *  rather than truncating -- truncating "0.999" to "1.00" would read as if the
+ *  stored value were smaller than it is. `minDecimals` still only pads.
  *
  *  Anything that is not a plain decimal is returned untouched rather than
  *  mangled -- if the backend ever sends something unexpected, showing it raw is
  *  far more debuggable than showing a confidently wrong number.
  */
-export function decimal(value: string | null | undefined, minDecimals = 0): string {
+export function decimal(
+  value: string | null | undefined,
+  minDecimals = 0,
+  maxDecimals?: number,
+): string {
   if (value == null) return "—";
   const raw = value.trim();
   if (raw === "") return "—";
@@ -83,18 +140,89 @@ export function decimal(value: string | null | undefined, minDecimals = 0): stri
   const sign = m[1] ?? "";
   const intRaw = m[2] ?? "";
   const fracRaw = m[3] ?? "";
-  const int = intRaw.replace(/^0+(?=\d)/, "") || "0";
-  const frac = fracRaw.padEnd(minDecimals, "0");
+
+  const { intDigits, fracDigits } =
+    maxDecimals !== undefined && fracRaw.length > maxDecimals
+      ? roundFraction(intRaw || "0", fracRaw, maxDecimals)
+      : { intDigits: intRaw, fracDigits: fracRaw };
+
+  const int = intDigits.replace(/^0+(?=\d)/, "") || "0";
+  const frac = fracDigits.padEnd(minDecimals, "0");
 
   const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   const body = frac ? `${grouped},${frac}` : grouped;
   return sign === "-" ? `−${body}` : body;
 }
 
-/** Ledger money with the currency mark. */
-export function decimalEur(value: string | null | undefined, minDecimals = 2): string {
-  const body = decimal(value, minDecimals);
+/** Ledger money with the currency mark, rounded to 2 decimals by default --
+ *  money is shown to the cent however much precision the stored Decimal
+ *  actually carries. Pass `maxDecimals` to override (see `decimal`). */
+export function decimalEur(
+  value: string | null | undefined,
+  minDecimals = 2,
+  maxDecimals = 2,
+): string {
+  const body = decimal(value, minDecimals, maxDecimals);
   return body === "—" ? "—" : `€ ${body}`;
+}
+
+/** Move a decimal string's point `places` to the right, in digit space.
+ *
+ *  Returns `null` for anything that is not a decimal number, so the caller can
+ *  decide what to show rather than being handed a mangled one.
+ *
+ *  Scientific notation is handled here rather than rejected, because the backend
+ *  really does emit it: `str(Decimal)` switches to "1E-7" once the adjusted
+ *  exponent drops below -6, which is reachable for a tiny `return_pct` (a cent of
+ *  P&L against a large basis), and "1E+3" for a positive exponent. Sliding the dot
+ *  two characters along such a string would produce nonsense. The exponent is
+ *  folded into the shift instead, so both notations take one path.
+ *
+ *  The single `Number()` reads the EXPONENT -- a count of digit positions, capped
+ *  by the pattern at four digits, never money. Integers that small are exact in a
+ *  double, and no digit of the value itself is ever parsed.
+ */
+function shiftPointRight(value: string, places: number): string | null {
+  const m = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d{1,4}))?$/.exec(value);
+  if (!m) return null;
+
+  const sign = m[1] === "-" ? "-" : "";
+  const intRaw = m[2] ?? "";
+  const fracRaw = m[3] ?? "";
+  if (intRaw === "" && fracRaw === "") return null;
+
+  const digits = intRaw + fracRaw;
+  // Where the point lands within `digits` after the shift. Negative means the
+  // value is smaller than one and needs leading zeros; past the end means it
+  // needs trailing ones.
+  const point = intRaw.length + places + (m[4] === undefined ? 0 : Number(m[4]));
+
+  if (point <= 0) return `${sign}0.${"0".repeat(-point)}${digits}`;
+  if (point >= digits.length) return `${sign}${digits}${"0".repeat(point - digits.length)}`;
+  return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
+}
+
+/** A ratio held as a decimal string, rendered as a percentage: "0.1234" -> "12,34%".
+ *
+ *  The point is moved two places in the STRING and the result handed to `decimal`,
+ *  so a return lands on screen with the same grouping, comma separator, U+2212
+ *  minus and half-away-from-zero rounding as every money cell beside it. Passing
+ *  it through `Number(...).toFixed(2)` would be both a float parse of a ledger
+ *  figure and an ASCII-hyphen "-12.34%" sitting next to "1.234,56".
+ *
+ *  `null` renders an em-dash, never "0%": a closure with a zero basis has no
+ *  return, and a zero there would claim it broke even. Anything unrecognisable is
+ *  returned untouched for the same reason `decimal` does it -- a raw string is far
+ *  more debuggable than a confidently wrong number.
+ */
+export function decimalPercent(value: string | null | undefined): string {
+  if (value == null) return "—";
+  const raw = value.trim();
+  if (raw === "") return "—";
+
+  const shifted = shiftPointRight(raw, 2);
+  if (shifted === null) return raw;
+  return `${decimal(shifted, 2, 2)}%`;
 }
 
 /** Sign test on a decimal string, again without parsing. Used only to pick a
