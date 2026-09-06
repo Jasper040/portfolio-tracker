@@ -45,7 +45,9 @@ const CLOSURE_COLUMNS: readonly ColumnDef[] = [
   { label: "OPEN", align: "right" },
   { label: "CLOSE", align: "right" },
   { label: "GROSS P&L", align: "right" },
-  { label: "CHARGES", align: "right" },
+  { label: "COMMISSION", align: "right" },
+  { label: "FX COST", align: "right" },
+  { label: "TAX", align: "right" },
   { label: "NET P&L", align: "right" },
   { label: "RETURN", align: "right" },
   { label: "DAYS", align: "right" },
@@ -156,7 +158,7 @@ export function Lots({ method }: LotsProps) {
                   {decimal(lot.quantity)}
                 </Td>
                 <Td padding="8px 11px" align="right" numeric>
-                  {decimal(lot.price, 2)}
+                  {decimal(lot.price, 2, 4)}
                 </Td>
                 <Td padding="8px 11px" align="right" numeric>
                   {decimalEur(lot.cost_basis)}
@@ -195,10 +197,10 @@ export function Lots({ method }: LotsProps) {
                   {decimal(closure.quantity)}
                 </Td>
                 <Td padding="8px 11px" align="right" numeric>
-                  {decimal(closure.open_price, 2)}
+                  {decimal(closure.open_price, 2, 4)}
                 </Td>
                 <Td padding="8px 11px" align="right" numeric>
-                  {decimal(closure.close_price, 2)}
+                  {decimal(closure.close_price, 2, 4)}
                 </Td>
                 <Td
                   padding="8px 11px"
@@ -210,6 +212,12 @@ export function Lots({ method }: LotsProps) {
                 </Td>
                 <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
                   {decimalEur(closure.commission)}
+                </Td>
+                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                  {decimalEur(closure.autofx)}
+                </Td>
+                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                  {decimalEur(closure.tax)}
                 </Td>
                 <Td
                   padding="8px 11px"

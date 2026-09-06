@@ -80,6 +80,60 @@ describe("decimal — the ledger path", () => {
   });
 });
 
+describe("decimal — rounding via maxDecimals (string arithmetic, never Number())", () => {
+  it("leaves the fraction untouched when maxDecimals is not given", () => {
+    // The default: every pre-existing caller keeps its current behaviour.
+    expect(decimal("41.80333333333333333333333332")).toBe("41,80333333333333333333333332");
+  });
+
+  it("rounds half away from zero rather than truncating", () => {
+    // 0.005 at 2 decimals rounds up, it does not just drop the trailing digit.
+    expect(decimal("0.005", 2, 2)).toBe("0,01");
+    expect(decimal("0.004", 2, 2)).toBe("0,00");
+  });
+
+  it("ripples a carry through an all-nines fraction", () => {
+    expect(decimal("0.999", 2, 2)).toBe("1,00");
+  });
+
+  it("carries into a new integer digit", () => {
+    expect(decimal("89.996", 2, 2)).toBe("90,00");
+  });
+
+  it("rounds a negative by magnitude, then reapplies the sign", () => {
+    expect(decimal("-1.005", 2, 2)).toBe(`${MINUS}1,01`);
+  });
+
+  it("does nothing when the value already has fewer decimals than the cap", () => {
+    expect(decimal("5", 2, 4)).toBe("5,00");
+    expect(decimal("12.3", 0, 4)).toBe("12,3");
+  });
+
+  it("does nothing to a value with no fraction at all", () => {
+    expect(decimal("42", 0, 2)).toBe("42");
+  });
+
+  it("caps the two real figures that motivated this fix", () => {
+    // Real gross_pnl / pnl values from the owner's export: price = |value_base|
+    // / |quantity| is a non-terminating Decimal whenever quantity does not
+    // divide the euro value evenly, and that precision propagates into pnl.
+    // The stored value keeps its full precision; only the display caps it.
+    expect(decimal("41.80333333333333333333333332", 2, 2)).toBe("41,80");
+    expect(decimal("-0.883333333333333333333333350", 2, 2)).toBe(`${MINUS}0,88`);
+  });
+
+  it("decimalEur caps at 2 decimals by default", () => {
+    expect(decimalEur("41.80333333333333333333333332")).toBe("€ 41,80");
+    expect(decimalEur("-0.883333333333333333333333350")).toBe(`€ ${MINUS}0,88`);
+  });
+
+  it("decimal at 4 decimals keeps DeGiro's own price precision intact", () => {
+    // The acceptance figure for the ORION lot: 65,530 must survive untouched.
+    expect(decimal("65.530", 2, 4)).toBe("65,530");
+    expect(decimal("153.70", 2, 4)).toBe("153,70");
+  });
+});
+
 describe("computed-value formatting", () => {
   it("formats euros in the Dutch convention", () => {
     expect(eur(1234.5)).toBe("€ 1.234,50");
