@@ -1,8 +1,12 @@
 """Application settings. Required secrets are validated at startup, not at use."""
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: `backend/app/settings.py` -> `backend/app` -> `backend` -> the repo.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -21,8 +25,15 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
     #: Where the operator's corporate-action answers live (design doc Sec 6.3).
     #: Ledger-adjacent rather than in the database on purpose: it is a hand-written
-    #: record of decisions, so it wants to be readable, diffable and committed.
-    corporate_actions_path: str = "config/corporate_actions.yaml"
+    #: record of decisions, so it wants to be readable and diffable.
+    #:
+    #: Absolute, anchored on the repo rather than on the working directory. The API
+    #: is started from `backend/` and the CLI is run from wherever the operator
+    #: happens to be, and a relative default breaks in the worst possible way: an
+    #: unreadable resolutions file answers nothing, so the import refuses and
+    #: reports the corporate actions as unanswered -- while the file sits there,
+    #: answered, one directory up.
+    corporate_actions_path: str = str(_REPO_ROOT / "config" / "corporate_actions.yaml")
 
     @property
     def cors_origin_list(self) -> list[str]:

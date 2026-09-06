@@ -155,7 +155,9 @@ class TestSuppression:
         non_economic = [r for r in rows if not r.is_economic]
         # 15 trade rows plus the 15 cash-book rows that survive classification.
         assert len(rows) == 30
-        assert len(non_economic) == 4
+        # Two events, each recorded twice by DeGiro: an offsetting share pair in
+        # Transactions.csv and the labelled cash pair in Account.csv.
+        assert len(non_economic) == 8
 
     def test_a_suppressed_row_records_why_it_was_suppressed(
         self, export: Path, tmp_path: Path
@@ -171,8 +173,8 @@ class TestSuppression:
         non_economic = [r for r in rows if not r.is_economic]
         notes = [row.note or "" for row in non_economic]
         assert {r.closure_reason for r in non_economic} == {"DECISION"}
-        assert sum(1 for note in notes if SPLIT_KEY in note) == 2
-        assert sum(1 for note in notes if PRODUCT_CHANGE_KEY in note) == 2
+        assert sum(1 for note in notes if SPLIT_KEY in note) == 4
+        assert sum(1 for note in notes if PRODUCT_CHANGE_KEY in note) == 4
 
     def test_the_suppressed_rows_are_exactly_the_blank_order_id_pairs(
         self, export: Path, tmp_path: Path

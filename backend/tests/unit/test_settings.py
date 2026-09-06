@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from app.settings import Settings
@@ -40,3 +42,27 @@ def test_cors_origins_splits_on_commas_not_json(monkeypatch: pytest.MonkeyPatch)
         "http://localhost:5173",
         "http://localhost:5174",
     ]
+
+
+def test_corporate_actions_path_does_not_depend_on_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The runbook starts the API from `backend/` and the CLI runs from wherever
+    the operator happens to be. A CWD-relative default points at a directory that
+    does not exist, and the failure mode is the worst kind: the import refuses,
+    because an unreadable resolutions file answers nothing, and says only that the
+    corporate actions are unanswered -- while the file sits there, answered.
+    """
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+    monkeypatch.delenv("CORPORATE_ACTIONS_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    resolved = Path(Settings().corporate_actions_path)
+    assert resolved.is_absolute()
+    assert resolved.parent.name == "config"
+    assert (resolved.parent.parent / "backend" / "app" / "settings.py").exists()
+
+
+def test_corporate_actions_path_is_still_overridable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+    monkeypatch.setenv("CORPORATE_ACTIONS_PATH", "/tmp/answers.yaml")
+    assert Settings().corporate_actions_path == "/tmp/answers.yaml"

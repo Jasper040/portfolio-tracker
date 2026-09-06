@@ -98,32 +98,93 @@ curl "http://localhost:8000/api/transactions?limit=5"
 
 ## 3. Loading data
 
-The ledger starts empty and the UI says so. Import a DeGiro export:
+The ledger starts empty and the UI says so. Import a DeGiro export **directory** —
+both `Transactions.csv` and `Account.csv` are required:
 
 ```powershell
 cd backend
-python -m app.cli import ..\degiro-export\Transactions.csv
-# batch 28d4533c-...: parsed 13, inserted 13, skipped 0
+python -m app.cli import ..\degiro-export
+# batch 4bfe79f8-...: parsed 428, inserted 428, skipped 0
 ```
 
-Imports are idempotent per source row — re-importing the same file inserts
-nothing and reports the rows as skipped.
+Both files, because neither is enough alone. `Transactions.csv` is authoritative
+for trades; `Account.csv` is authoritative for everything else — dividends,
+deposits, fees — and is the only file that names a corporate action.
+
+Imports are idempotent per source row: re-running inserts nothing and reports the
+rows as skipped.
+
+### The first import will refuse
+
+A corporate action reaches `Transactions.csv` as an ordinary offsetting buy/sell
+pair with a blank Order ID. Booked as trades, the sale realises a profit that never
+happened. So the import stops and asks (design doc Sec 6.3):
+
+```
+2 corporate action(s) must be answered before this export imports.
+Nothing was written. Add each key to ...\config\corporate_actions.yaml and run this again.
+
+  US0000000901:2025-02-18:910.40
+      kind:   SPLIT
+      amount: 910.40 on 2025-02-18
+      label:  SPLIT AANPASSING: 10 ORION Corporation @ 90,666 USD (US0000000901)
+  ...
+
+resolutions:
+  - key: US0000000901:2025-02-18:910.40
+    treatment: corporate_action
+```
+
+Copy the `resolutions:` block it prints into `config/corporate_actions.yaml` — do
+not retype the keys, a mistyped one parses cleanly and applies to nothing. Then run
+the import again.
+
+```powershell
+Copy-Item ..\config\corporate_actions.example.yaml ..\config\corporate_actions.yaml
+```
+
+`config/corporate_actions.yaml` is gitignored: a key names an instrument, a date
+and an amount. The committed `.example.yaml` documents the format. The path is
+absolute and anchored on the repo, so it does not matter which directory you run
+from; override it with `CORPORATE_ACTIONS_PATH` if you keep answers elsewhere.
+
+Answering `treatment: corporate_action` imports both legs of the event and flags
+them `is_economic = false`, which is the `NON-ECON` badge in the Transactions
+table. Answering `treatment: trade` is the escape hatch for a false positive — the
+rows stay economic.
 
 ### CLI reference
 
 | Command | Purpose |
 |---|---|
-| `python -m app.cli import <path>` | Import a DeGiro `Transactions.csv`. Prints the batch id. |
+| `python -m app.cli import <export-dir>` | Import a DeGiro export directory. Prints the batch id. Exits 1 while a corporate action is unanswered, 2 when an export file is missing — so it can gate a script. `--resolutions <path>` overrides the answers file. |
+| `python -m app.cli review` | Show the corporate-action review queue: what was detected, what is still open. Rebuilt by every import, so it always describes the export as it stands. |
 | `python -m app.cli batches` | List import batches, newest first. This is how to find a batch id after the terminal has scrolled. |
 | `python -m app.cli undo <batch-id>` | Remove every transaction from one batch. The ledger's only reversal mechanism. |
-| `python -m app.cli reconcile <export-dir>` | Check the cross-file invariants between `Transactions.csv`, `Account.csv` and `Portfolio.csv` (design doc Sec 3.6). Exits non-zero on any failure, so it can gate an import in a script. `Portfolio.csv` is optional; without it the cash invariant is skipped. |
+| `python -m app.cli reconcile <export-dir>` | Check the cross-file invariants between `Transactions.csv`, `Account.csv` and `Portfolio.csv` (design doc Sec 3.6). Exits non-zero on any failure. `Portfolio.csv` is optional; without it the cash invariant is skipped. |
 
-To try the app without touching real data, import the synthetic golden file
-instead — same shape, invented amounts:
+To try the app without touching real data, point it at the synthetic golden files —
+same shape and quirks, invented amounts. They live in `backend/tests/golden/` under
+their test names, so copy them into a directory first:
 
 ```powershell
-python -m app.cli import tests\golden\degiro_transactions_golden.csv
+New-Item -ItemType Directory -Force ..\.scratch\golden-export
+Copy-Item tests\golden\degiro_transactions_golden.csv ..\.scratch\golden-export\Transactions.csv
+Copy-Item tests\golden\degiro_account_golden.csv ..\.scratch\golden-export\Account.csv
+python -m app.cli import ..\.scratch\golden-export --resolutions ..\config\corporate_actions.example.yaml
+# batch 6e6605e7-...: parsed 30, inserted 30, skipped 0
 ```
+
+`--resolutions` is needed here: the example file answers the two *golden* corporate
+actions, while the default path holds the answers for your real export. Pointing at
+it explicitly keeps the two sets of answers from overwriting each other.
+
+`reconcile` does **not** pass on the golden files, and that is not a bug. The
+fixture reproduces the structural quirks of the export — the misaligned header, the
+byte-identical fills, the corporate-action pairs — not its cross-file arithmetic; it
+carries one commission row against nine order ids. The Sec 3.6 invariants are
+covered against purpose-built rows in `tests/unit/test_reconcile.py`, and against
+the real export under `pytest -m realdata`.
 
 ---
 
@@ -133,8 +194,8 @@ python -m app.cli import tests\golden\degiro_transactions_golden.csv
 
 ```powershell
 cd backend
-python -m pytest                 # 169 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: 13 tests against the gitignored real exports.
+python -m pytest                 # 227 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 24 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.

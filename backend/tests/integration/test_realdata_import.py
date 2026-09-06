@@ -90,14 +90,15 @@ def test_undo_empties_the_ledger(resolutions: Path) -> None:
 
 
 def test_the_two_corporate_actions_land_non_economic(resolutions: Path) -> None:
-    """Four rows, and only those four. Every other row in the export is a real
-    economic event, so a fifth here would mean a genuine trade had been suppressed."""
+    """Eight rows, and only those eight: two events, each recorded twice -- as an
+    offsetting share pair in Transactions.csv and as the labelled cash pair in
+    Account.csv. A ninth would mean a genuine trade had been suppressed."""
     engine = _engine()
     import_degiro_export(engine, EXPORT, ensure_default_account(engine), resolutions)
     with Session(engine) as session:
         rows = session.exec(select(Transaction)).all()
     suppressed = [row for row in rows if not row.is_economic]
-    assert len(suppressed) == 4
+    assert len(suppressed) == 8
     assert {row.isin for row in suppressed} == {"US0000000901", "US0000000902"}
 
 

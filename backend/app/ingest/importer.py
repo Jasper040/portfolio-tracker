@@ -199,16 +199,46 @@ def insert_rows(
 
 
 def _suppression_notes(
-    candidates: Sequence[CorporateAction], resolutions: Mapping[str, Resolution]
+    candidates: Sequence[CorporateAction],
+    resolutions: Mapping[str, Resolution],
+    cash_rows: Sequence[NormalisedRow] = (),
 ) -> dict[str, str]:
-    """Which rows to flag, and the sentence explaining why, keyed by `source_ref`."""
+    """Which rows to flag, and the sentence explaining why, keyed by `source_ref`.
+
+    DeGiro records a corporate action twice: as an offsetting share pair in
+    `Transactions.csv` and as the labelled cash pair in `Account.csv` that names
+    it. Both are legs of one event, so both are flagged. Flagging only the trade
+    file would leave `is_economic` meaning "not a trade" on one file and "not an
+    event" on the other, and the ledger would carry the same amount twice, once
+    marked and once not.
+
+    They are flagged, never dropped: the label rows are where M1 reads the ratio,
+    stated in the broker's own words (`SPLIT AANPASSING: 10 ORION @ 90,666` next
+    to `1 ORION @ 910,40` is the 10-for-1).
+    """
     refs = suppressed_refs(candidates, resolutions)
-    return {
+    resolved = [candidate for candidate in candidates if set(candidate.source_refs) & refs]
+
+    notes = {
         ref: f"corporate action {candidate.key} ({candidate.kind})"
-        for candidate in candidates
+        for candidate in resolved
         for ref in candidate.source_refs
-        if ref in refs
     }
+
+    # The same (date, isin, abs(local amount)) key detection joined on, applied to
+    # the other file. Restricted to rows the taxonomy already called a corporate
+    # action, so an ordinary trade duplicate of the same size cannot be caught.
+    events = {
+        (candidate.trade_date, candidate.isin, candidate.local_amount): candidate
+        for candidate in resolved
+    }
+    for row in cash_rows:
+        if row.txn_type != "CORPORATE_ACTION" or row.isin is None or row.gross_local is None:
+            continue
+        candidate = events.get((row.trade_date, row.isin, abs(row.gross_local)))
+        if candidate is not None:
+            notes[row.source_ref] = f"corporate action {candidate.key} ({candidate.kind})"
+    return notes
 
 
 def rebuild_review_queue(
@@ -282,14 +312,15 @@ def import_degiro_export(
     if unresolved:
         raise QuarantineError(unresolved)
 
+    cash_rows = normalise_account_rows(account)
     return insert_rows(
         engine,
         account_id,
-        [*trades, *normalise_account_rows(account)],
+        [*trades, *cash_rows],
         filename=f"{TRANSACTIONS_FILENAME}+{ACCOUNT_FILENAME}",
         file_sha256=_sha256(transactions_path, account_path),
         parser_version=f"{PARSER_VERSION}+{ACCOUNT_PARSER_VERSION}",
-        suppressed=_suppression_notes(candidates, resolutions),
+        suppressed=_suppression_notes(candidates, resolutions, cash_rows),
     )
 
 

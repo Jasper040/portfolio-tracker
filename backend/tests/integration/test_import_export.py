@@ -154,3 +154,56 @@ class TestIdempotency:
         assert second.rows_skipped == TOTAL_ROWS
         with Session(engine) as session:
             assert len(session.exec(select(Transaction)).all()) == TOTAL_ROWS
+
+
+class TestCorporateActionLegsInBothFiles:
+    """A resolved event is non-economic wherever it appears.
+
+    DeGiro records each corporate action twice: as an offsetting share pair in
+    `Transactions.csv` and as a labelled cash pair in `Account.csv`. Flagging only
+    the first would make `is_economic` mean "not a trade" on one file and "not an
+    event" on the other, and the browser table would show the same amount twice,
+    once badged NON-ECON and once not.
+    """
+
+    def _rows(self, engine: Engine, export: Path, resolutions: Path) -> list[Transaction]:
+        _import(engine, export, resolutions)
+        with Session(engine) as session:
+            return list(session.exec(select(Transaction)).all())
+
+    def test_both_files_legs_are_flagged(self, export: Path, resolutions: Path) -> None:
+        rows = self._rows(_engine(), export, resolutions)
+        suppressed = [row for row in rows if not row.is_economic]
+        assert len(suppressed) == 8
+
+    def test_the_account_csv_label_rows_are_among_them(
+        self, export: Path, resolutions: Path
+    ) -> None:
+        rows = self._rows(_engine(), export, resolutions)
+        labels = [row for row in rows if row.txn_type == "CORPORATE_ACTION"]
+        assert len(labels) == 4
+        assert all(not row.is_economic for row in labels)
+
+    def test_the_label_rows_keep_their_raw_data_for_the_ratio(
+        self, export: Path, resolutions: Path
+    ) -> None:
+        """M1 reads the split ratio out of these descriptions, so they are flagged,
+        never dropped: `SPLIT AANPASSING: 10 X @ 10,00` and `100 X @ 1,00` is the
+        10-for-1 stated in the broker's own words."""
+        rows = self._rows(_engine(), export, resolutions)
+        labels = [row for row in rows if row.txn_type == "CORPORATE_ACTION"]
+        assert all("AANPASSING" in row.raw_json or "PRODUCTWIJZIGING" in row.raw_json
+                   for row in labels)
+
+    def test_an_unresolved_treatment_of_trade_flags_neither_file(
+        self, export: Path, tmp_path: Path
+    ) -> None:
+        body = (
+            f"resolutions:\n"
+            f"  - key: {SPLIT_KEY}\n    treatment: trade\n"
+            f"  - key: {PRODUCT_CHANGE_KEY}\n    treatment: trade\n"
+        )
+        path = tmp_path / "as_trades.yaml"
+        path.write_text(body, encoding="utf-8")
+        rows = self._rows(_engine(), export, path)
+        assert all(row.is_economic for row in rows)

@@ -45,3 +45,6 @@ Thumbs.db
 
 # SDD scratch workspace (git-ignored)
 .superpowers/
+
+# Local scratch (runbook uses it to stage the golden files as an export dir)
+.scratch/
