@@ -39,6 +39,7 @@ Copy-Item ..\.env.example .env
 DATABASE_URL=sqlite:///./data/portfolio.sqlite
 BASE_CURRENCY=EUR
 LOT_METHOD=FIFO
+CORS_ORIGINS=http://localhost:5173
 ```
 
 ### Frontend
@@ -63,7 +64,8 @@ cd backend
 python -m uvicorn app.main:create_app --factory --reload --port 8000
 ```
 
-`--factory` is required: `create_app()` is a factory, not a module-level `app`.
+`app.main:create_app` is a factory, not a module-level `app`. Uvicorn detects that
+on its own, so omitting `--factory` still works — it just warns. Pass it anyway.
 
 **Terminal 2 — UI on :5173**
 
@@ -74,10 +76,16 @@ npm run dev
 
 Then open <http://localhost:5173>.
 
-> **The port is not negotiable.** `backend/app/main.py` hard-codes
-> `allow_origins=["http://localhost:5173"]`. If 5173 is already taken, Vite
-> silently falls back to 5174 and every API call fails CORS with a bare
-> `Failed to fetch`. See [Troubleshooting](#6-troubleshooting).
+> **Watch the port.** The API only accepts browser origins listed in
+> `CORS_ORIGINS` (default `http://localhost:5173`). If 5173 is already taken,
+> Vite silently falls back to 5174 and every API call fails CORS with a bare
+> `Failed to fetch`. Either free the port, or add the fallback:
+>
+> ```ini
+> CORS_ORIGINS=http://localhost:5173,http://localhost:5174
+> ```
+>
+> Comma-separated, not JSON. See [Troubleshooting](#6-troubleshooting).
 
 ### Health check
 
@@ -124,7 +132,7 @@ python -m app.cli import tests\golden\degiro_transactions_golden.csv
 
 ```powershell
 cd backend
-python -m pytest                 # 74 tests. Excludes the realdata suite by default.
+python -m pytest                 # 78 tests. Excludes the realdata suite by default.
 python -m pytest -m realdata     # Opt-in: runs against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
@@ -145,12 +153,18 @@ never depends on whether the owner's gitignored exports happen to be on disk.
 
 ```powershell
 cd frontend
+npm test             # 50 Vitest tests over lib/
+npm run test:watch   # same, in watch mode
 npm run typecheck    # tsc --noEmit, strict + noUncheckedIndexedAccess
 npm run build        # tsc -b && vite build -> dist/
 ```
 
-There is no frontend test runner or linter configured yet. `npm run typecheck`
-is the only automated gate.
+Tests cover `lib/` only, which is where the logic worth testing lives: lot
+matching, TWR/MWR, the counterfactual and the two money-formatting paths. The
+components are presentational and are covered by typecheck plus the build.
+
+There is no frontend linter configured. `npm run typecheck` and `npm test` are
+the automated gates.
 
 ---
 
@@ -188,7 +202,7 @@ When the M1 endpoints land, the change is `provider.ts` plus deleting the fixtur
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Could not reach the API — Failed to fetch` on Transactions | The backend is down, **or** the UI is not on :5173 and CORS blocked it | Check the Vite banner for the actual port. If it says 5174, something else holds 5173 — free it, or add that origin to `allow_origins` in `backend/app/main.py`. |
+| `Could not reach the API — Failed to fetch` on Transactions | The backend is down, **or** the UI's origin is not in `CORS_ORIGINS` | Check the Vite banner for the actual port. If it says 5174, free 5173 or add `http://localhost:5174` to `CORS_ORIGINS` in `backend/.env` and restart the API. |
 | `sqlite3.OperationalError: unable to open database file` | `backend/data/` does not exist | `New-Item -ItemType Directory -Force data` from `backend/` |
 | `ValidationError: database_url Field required` | No `.env` in the current directory | Copy `.env.example` to `backend/.env`, and run the API/CLI from `backend/` |
 | `Error loading ASGI app. Attribute "app" not found` | Pointed at `app.main:app`, which does not exist | Target the factory: `app.main:create_app --factory` |
