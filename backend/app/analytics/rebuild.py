@@ -26,7 +26,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, select
 
 from app.domain.lots import LotMethod, match_lots
-from app.domain.orders import is_share_movement, to_lot_transactions
+from app.domain.orders import charges_of, is_share_movement, to_lot_transactions
 from app.domain.splits import apply_splits, derive_splits
 from app.models.ledger import Lot, LotClosure, Transaction
 
@@ -49,18 +49,19 @@ class RebuildResult:
 def _ledger_charges(rows: list[Transaction]) -> Decimal:
     """What the broker actually took, on the rows lot matching is allowed to see.
 
-    Gated by `is_share_movement` -- the same predicate `to_lot_transactions` uses to
-    decide which rows it attributes charges to. Two separately written predicates
-    could drift (a future zero-quantity or blank-value row would trip one but not
-    the other), and the drift would only ever surface as a `ChargeMismatch` naming
-    apportionment, the one place that would not actually be broken. One definition
-    makes that class of bug impossible rather than merely untested today.
+    Both halves are borrowed from `domain/orders.py` rather than restated here:
+    `is_share_movement` decides which rows count, and `charges_of` turns a row's
+    debits into money paid. That module owns the sign flip and states that it
+    happens exactly once; a second copy of either here would be free to drift from
+    the side of the equality that `to_lot_transactions` actually attributes, and
+    the drift would surface as a `ChargeMismatch` naming apportionment -- the one
+    place that would not actually be broken.
     """
     total = _ZERO
     for row in rows:
         if not is_share_movement(row):
             continue
-        total += -row.fee_base - (row.autofx_fee_base or _ZERO) - row.tax_base
+        total += charges_of(row).total
     return total
 
 

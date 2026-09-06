@@ -72,8 +72,17 @@ def _order_key(row: LedgerRow) -> tuple[str, str, str]:
     return (row.order_ref or f"synthetic:{stamp}:{isin}", stamp, isin)
 
 
-def _charges_of(row: LedgerRow) -> Charges:
-    """Ledger debits into money paid."""
+def charges_of(row: LedgerRow) -> Charges:
+    """The single conversion from ledger debits to money paid.
+
+    The ledger stores a charge negative, as a debit; the domain layer counts money
+    paid, positive. `domain/charges.py` states that the flip happens exactly once,
+    and this is the once. `analytics/rebuild.py` calls it too, for the ledger side
+    of the standing invariant `Sum(attributed) == Sum(ledger)` -- a second copy of
+    the arithmetic there would be free to drift from this one, and the drift would
+    surface as a ChargeMismatch blaming apportionment, the one thing that would not
+    actually be broken.
+    """
     return Charges(
         commission=-row.fee_base,
         autofx=-(row.autofx_fee_base or _ZERO),
@@ -126,7 +135,7 @@ def to_lot_transactions(rows: Sequence[LedgerRow]) -> dict[str, list[LotTransact
 
         pooled = Charges.zero()
         for row in fills:
-            pooled = pooled + _charges_of(row)
+            pooled = pooled + charges_of(row)
 
         # Quantity, not value: the two fills of one order are the same instrument at
         # nearly the same price, and quantity is the thing DeGiro's own per-order
