@@ -39,6 +39,7 @@ from app.domain.symbols import (
     accepted_symbol,
     assess,
     judge,
+    resolution_note,
     split_factor,
 )
 
@@ -186,6 +187,27 @@ class TestTheImpostor:
         assert not verdict.accepted
         assert verdict.reason == UNSTABLE
 
+    def test_offered_alongside_the_correct_symbol_the_impostor_still_never_wins(self) -> None:
+        """`accepted_symbol` now auto-resolves when several candidates pass, so
+        this closes the door that opens: the impostor must fail `assess` on its
+        own merits, before the tie-break logic ever sees it, or "more lenient
+        tie-break" would quietly become "more lenient toward impostors"."""
+        trades = [
+            buy(date(2025, 1, 6), "20.00"),
+            buy(date(2025, 2, 3), "24.00"),
+            buy(date(2025, 3, 3), "26.00"),
+        ]
+        impostor = series(
+            "EXA2S.DE",
+            {date(2025, 1, 6): "6.00", date(2025, 2, 3): "5.00", date(2025, 3, 3): "0.60"},
+        )
+        correct = series(
+            "EXA.AS",
+            {date(2025, 1, 6): "20.00", date(2025, 2, 3): "24.00", date(2025, 3, 3): "26.00"},
+        )
+        verdicts = judge([impostor, correct], trades, [])
+        assert accepted_symbol(verdicts) == "EXA.AS"
+
 
 class TestCurrency:
     def test_rejects_a_series_quoted_in_another_currency(self) -> None:
@@ -273,12 +295,61 @@ class TestChoosingBetweenCandidates:
         verdicts = judge([self.WRONG, self.RIGHT], self.TRADES, [])
         assert [v.symbol for v in verdicts] == ["EXA2S.DE", "EXA.AS"]
 
-    def test_refuses_to_choose_when_two_candidates_agree(self) -> None:
+    def test_two_agreeing_venues_resolve_to_the_one_closest_to_parity(self) -> None:
         """Two listings of the same instrument on two venues both pass, and
-        picking one arbitrarily would silently prefer a venue with worse
-        liquidity or a different close time. A human decides."""
+        agree with each other -- the review's own finding, 20 times out of 21
+        real quarantines. That is no longer a silent arbitrary pick: it is
+        `VENUE_SPREAD` recognising one instrument on several venues, and it
+        resolves to the venue that sits closest to the ledger's own prices."""
+        trades = [buy(date(2025, 1, 6), "20.00")]
+        nearer = series("EXA.AS", {date(2025, 1, 6): "20.00"})  # ratio 1.00, distance 1.00
+        farther = series("EXA.PA", {date(2025, 1, 6): "21.00"})  # ratio 0.952, distance 1.05
+        verdicts = judge([farther, nearer], trades, [])
+        assert accepted_symbol(verdicts) == "EXA.AS"
+
+    def test_two_candidates_that_disagree_with_each_other_are_still_none(self) -> None:
+        """Each individually sits inside the +/-30% band against the ledger --
+        so each passes `assess` on its own -- but 1.00 and 0.80 are 25% apart
+        from each other, past `VENUE_SPREAD`. That is a real ambiguity, not two
+        venues of one instrument, and still needs a human."""
+        trades = [buy(date(2025, 1, 6), "20.00")]
+        one = series("EXA.AS", {date(2025, 1, 6): "20.00"})  # ratio 1.00, distance 1.00
+        other = series("EXA.PA", {date(2025, 1, 6): "25.00"})  # ratio 0.80, distance 1.25
+        verdicts = judge([one, other], trades, [])
+        assert accepted_symbol(verdicts) is None
+
+    def test_three_candidates_two_close_and_one_far_are_still_none(self) -> None:
+        """A genuine disagreement anywhere in the passing set blocks the whole
+        tie-break, even when a majority of the candidates agree with each
+        other -- `VENUE_SPREAD` is measured across ALL passing candidates
+        (closest to furthest), not just between adjacent ones."""
+        trades = [buy(date(2025, 1, 6), "20.00")]
+        one = series("EXA.AS", {date(2025, 1, 6): "20.00"})  # ratio 1.00, distance 1.00
+        close = series("EXA.PA", {date(2025, 1, 6): "20.20"})  # ratio 0.99, distance 1.01
+        far = series("EXA.L", {date(2025, 1, 6): "25.00"})  # ratio 0.80, distance 1.25
+        verdicts = judge([one, close, far], trades, [])
+        assert accepted_symbol(verdicts) is None
+
+    def test_an_exact_tie_resolves_deterministically_by_symbol_name(self) -> None:
+        """Two candidates equally close to parity have nothing but the symbol
+        name to break the tie on -- never list position, or the same two
+        candidates offered in a different order would silently answer
+        differently."""
         twin = series("EXA.PA", {date(2025, 1, 6): "20.00", date(2025, 2, 3): "24.00"})
-        assert accepted_symbol(judge([self.RIGHT, twin], self.TRADES, [])) is None
+        assert accepted_symbol(judge([self.RIGHT, twin], self.TRADES, [])) == "EXA.AS"
+        # Reversed input order: the same answer, not "whichever came first".
+        assert accepted_symbol(judge([twin, self.RIGHT], self.TRADES, [])) == "EXA.AS"
+
+    def test_resolution_note_names_the_winner_and_the_alternatives(self) -> None:
+        twin = series("EXA.PA", {date(2025, 1, 6): "20.00", date(2025, 2, 3): "24.00"})
+        note = resolution_note(judge([twin, self.RIGHT], self.TRADES, []))
+        assert note is not None
+        assert "EXA.AS" in note
+        assert "EXA.PA" in note
+
+    def test_resolution_note_is_none_when_exactly_one_candidate_passed(self) -> None:
+        verdicts = judge([self.WRONG, self.RIGHT], self.TRADES, [])
+        assert resolution_note(verdicts) is None
 
     def test_refuses_when_none_agree(self) -> None:
         assert accepted_symbol(judge([self.WRONG], self.TRADES, [])) is None

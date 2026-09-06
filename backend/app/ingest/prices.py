@@ -103,6 +103,11 @@ class FetchResult:
     sources: dict[str, int]
     #: The oldest day now in the price cache. The five-year backfill, measured.
     earliest: date | None
+    #: ISIN -> `resolution_note`, carried straight from `ResolutionReport.auto_resolved`.
+    #: Every instrument here was resolved among two or more agreeing venues
+    #: rather than a single unambiguous candidate -- visible so the operator can
+    #: override any of them in `config/instrument_symbols.yaml`.
+    resolution_notes: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +313,7 @@ def fetch_prices(
         fx_rows=fx_rows,
         sources=dict(sources),
         earliest=earliest,
+        resolution_notes=dict(report.auto_resolved),
     )
 
 

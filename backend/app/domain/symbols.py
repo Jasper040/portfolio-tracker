@@ -52,6 +52,16 @@ BAND_HIGH = Decimal("1.30")
 #: tracking a correlated underlying looks like.
 SPREAD_MAX = Decimal("1.30")
 
+#: max(distance) / min(distance) across candidates that have ALREADY passed
+#: `assess`. Not the same measurement as `SPREAD_MAX`: that one asks whether one
+#: candidate is stable across several trades, this one asks whether several
+#: DIFFERENT candidates -- each already proved stable on its own -- are close
+#: enough to each other to be the same instrument quoted on different venues
+#: rather than two genuinely different answers. Evidence: of 21 quarantined
+#: instruments in a real run, 20 had multiple passing candidates that agreed
+#: with each other to within 10%, which is the band this constant encodes.
+VENUE_SPREAD = Decimal("1.10")
+
 #: How far back a close may be carried to meet a trade. The same four days the
 #: valuation join calls fresh: a weekend plus one holiday.
 NEAR_DAYS = 4
@@ -188,13 +198,97 @@ def judge(
     return tuple(assess(candidate, trades, splits) for candidate in candidates)
 
 
-def accepted_symbol(verdicts: Sequence[Verdict]) -> str | None:
-    """The one symbol that passed, or None.
-
-    None when nothing passed AND when more than one did. Two listings of the same
-    instrument on two venues both agree with the ledger, and picking one
-    arbitrarily would silently choose a venue with different liquidity and a
-    different close time. Ambiguity is a question, not a tie-break.
+def _distance_from_parity(verdict: Verdict) -> Decimal:
+    """How far this candidate's worst trade sits from a ratio of 1, folded so
+    that 0.95 and 1.05 -- equally wrong in opposite directions -- compare equal.
     """
-    accepted = [verdict.symbol for verdict in verdicts if verdict.accepted]
-    return accepted[0] if len(accepted) == 1 else None
+    worst = verdict.worst_ratio
+    assert worst is not None, "an accepted verdict always has at least one ratio"
+    return max(worst, _ONE / worst)
+
+
+def _ranked_by_distance(accepted: Sequence[Verdict]) -> list[tuple[Decimal, Verdict]]:
+    """Accepted verdicts, closest to parity first. Ties break on symbol name --
+    never on the order candidates happened to be offered in -- so the winner
+    does not depend on which provider answered first."""
+    return sorted(
+        ((_distance_from_parity(verdict), verdict) for verdict in accepted),
+        key=lambda pair: (pair[0], pair[1].symbol),
+    )
+
+
+def _venue_tie_break(verdicts: Sequence[Verdict]) -> list[tuple[Decimal, Verdict]] | None:
+    """The ranked, agreeing group of passing candidates, or None.
+
+    None when fewer than two candidates passed (nothing to break a tie between)
+    or when the passing candidates disagree with each other by more than
+    `VENUE_SPREAD` (a genuine ambiguity, not a multi-venue listing).
+    """
+    accepted = [verdict for verdict in verdicts if verdict.accepted]
+    if len(accepted) < 2:
+        return None
+    ranked = _ranked_by_distance(accepted)
+    closest, furthest = ranked[0][0], ranked[-1][0]
+    if furthest / closest > VENUE_SPREAD:
+        return None
+    return ranked
+
+
+def accepted_symbol(verdicts: Sequence[Verdict]) -> str | None:
+    """The symbol to use, or None when the ambiguity still needs a human.
+
+    The failure this module exists to catch -- a leveraged or inverse product on
+    the same underlying -- produces a candidate that DISAGREES WITH THE LEDGER.
+    `assess` rejects it outright, on OUT_OF_BAND or UNSTABLE, so an impostor
+    never has `accepted=True` and never reaches this function's tie-break at
+    all. What reaches here, when more than one candidate passed, is a set of
+    candidates that each independently proved themselves against the ledger's
+    own executed prices. Choosing among THEM is a tie between equivalent
+    answers -- two or more listings of one instrument on different venues --
+    not a silent choice between different ones.
+
+    So: zero passing candidates is still None (nothing to offer). One is that
+    one, unchanged. Two or more are resolved automatically ONLY if they agree
+    with each other -- within `VENUE_SPREAD` of parity-distance, the same
+    "several venues, one instrument" pattern the evidence showed 20 times out
+    of 21 real quarantines -- and the answer is the one closest to parity,
+    ties broken on symbol name. If the passing candidates disagree with each
+    other beyond that band, that is a real ambiguity and still returns None: a
+    human decides, exactly as before.
+
+    Any auto-resolution here can be overridden by adding the ISIN to
+    `config/instrument_symbols.yaml` -- an answer file entry always wins and is
+    never probed, let alone tie-broken. See `resolution_note` for the line that
+    makes an auto-resolution visible rather than silent.
+    """
+    accepted = [verdict for verdict in verdicts if verdict.accepted]
+    if len(accepted) == 1:
+        return accepted[0].symbol
+
+    ranked = _venue_tie_break(verdicts)
+    return ranked[0][1].symbol if ranked else None
+
+
+def resolution_note(verdicts: Sequence[Verdict]) -> str | None:
+    """A one-line explanation when `accepted_symbol` broke a tie, else None.
+
+    This project's ethic is that a number that depends on a methodological
+    choice carries that choice visibly next to it. Auto-resolving several
+    agreeing venues to one symbol is such a choice, so the caller that prints
+    or stores the resolved symbol should also be able to show -- and the
+    operator should be able to override, in `config/instrument_symbols.yaml`
+    -- which alternatives were on the table and why one was preferred.
+
+    None both when nothing passed, when exactly one candidate passed (no tie
+    to break), and when the passing candidates disagreed and `accepted_symbol`
+    returned None -- there is no resolution to explain in either case.
+    """
+    ranked = _venue_tie_break(verdicts)
+    if ranked is None:
+        return None
+    winner = ranked[0][1]
+    alternatives = ", ".join(verdict.symbol for _, verdict in ranked[1:])
+    return (
+        f"{winner.symbol} chosen over {alternatives} -- agreeing venues within "
+        f"{VENUE_SPREAD} of each other, {winner.symbol} closest to parity"
+    )

@@ -321,6 +321,17 @@ def fetch_prices_command(
     if result.earliest is not None:
         typer.echo(f"cache reaches back to {result.earliest.isoformat()}")
 
+    if result.resolution_notes:
+        # Visible, not silent: each of these was picked automatically among two
+        # or more venues that agreed with each other and with the ledger. The
+        # operator can override any of them by adding the ISIN to
+        # `instrument_symbols.yaml`.
+        typer.echo(
+            f"\nauto-resolved among several venues (override in {answers_path} if wrong):"
+        )
+        for isin, note in sorted(result.resolution_notes.items()):
+            typer.echo(f"  {isin}: {note}")
+
 
 @app.command("symbols")
 def symbols_command() -> None:

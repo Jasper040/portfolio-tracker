@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -43,6 +43,7 @@ from app.domain.symbols import (
     Verdict,
     accepted_symbol,
     judge,
+    resolution_note,
 )
 from app.models.market import SymbolReview
 from app.providers.base import PriceProvider, SymbolCandidate, SymbolResolver
@@ -94,6 +95,13 @@ class ResolutionReport:
     #: ISIN -> symbol, or None for "answered `manual`".
     resolved: dict[str, str | None]
     pending: tuple[PendingSymbol, ...]
+    #: ISIN -> `resolution_note`, for every instrument `accepted_symbol` chose
+    #: automatically among two or more agreeing venues. Empty for an instrument
+    #: answered in the file, resolved by exactly one candidate, or still
+    #: pending -- there is nothing auto-resolved to explain in any of those
+    #: cases. This is what lets the operator see, and override in
+    #: `config/instrument_symbols.yaml`, a choice made on their behalf.
+    auto_resolved: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -235,6 +243,7 @@ def resolve_symbols(
 
     resolved: dict[str, str | None] = {}
     pending: list[PendingSymbol] = []
+    auto_resolved: dict[str, str] = {}
 
     # One batch call for everything an answer file entry did not already
     # settle -- a deterministic, sorted list, never a set, so the resolver's
@@ -257,6 +266,9 @@ def resolve_symbols(
         chosen = accepted_symbol(verdicts)
         if chosen is not None:
             resolved[isin] = chosen
+            note = resolution_note(verdicts)
+            if note is not None:
+                auto_resolved[isin] = note
             continue
 
         pending.append(
@@ -268,7 +280,7 @@ def resolve_symbols(
             )
         )
 
-    return ResolutionReport(resolved=resolved, pending=tuple(pending))
+    return ResolutionReport(resolved=resolved, pending=tuple(pending), auto_resolved=auto_resolved)
 
 
 def _as_json(verdicts: Sequence[Verdict]) -> str:
