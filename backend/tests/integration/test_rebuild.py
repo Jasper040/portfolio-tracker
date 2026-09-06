@@ -146,6 +146,64 @@ def _drop_one_fills_charges(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rebuild_module, "to_lot_transactions", lossy)
 
 
+def _charges_the_broker_took(engine: Engine) -> Decimal:
+    """The ledger's charge total, computed here rather than by the production code.
+
+    `rebuild()` raises whenever its two totals differ, so asserting
+    `charges_attributed == charges_in_ledger` is unfalsifiable -- it can only be
+    reached when it is already true, and its real content is "rebuild did not
+    raise". Comparing against an independently written oracle is what turns it back
+    into a test of the arithmetic.
+
+    Deliberately NOT a call to `_ledger_charges` or `charges_of`: a helper compared
+    to itself agrees with itself however wrong both are. The predicate and the sign
+    flip are restated in full here, so a change to either has to be made twice
+    before this test stops noticing.
+    """
+    with Session(engine) as session:
+        rows = session.exec(select(Transaction)).all()
+
+    total = D("0.00")
+    for row in rows:
+        counts = (
+            row.is_economic
+            and row.isin is not None
+            and row.quantity is not None
+            and row.quantity != 0
+            and row.value_base is not None
+        )
+        if not counts:
+            continue
+        total += -row.fee_base - (row.autofx_fee_base or D("0.00")) - row.tax_base
+    return total
+
+
+def _row_counts(engine: Engine, method: str) -> tuple[int, int]:
+    with Session(engine) as session:
+        lots = session.exec(select(Lot).where(Lot.method == method)).all()
+        closures = session.exec(
+            select(LotClosure).where(LotClosure.method == method)
+        ).all()
+    return len(lots), len(closures)
+
+
+def _full_snapshot(engine: Engine) -> list[dict[str, object]]:
+    """Every derived row INCLUDING its uuid, so a delete-and-rewrite is visible.
+
+    `_lot_snapshot` drops `id` because a legitimate rebuild assigns fresh uuids.
+    Here the point is the opposite: rows that were never touched must still carry
+    the identities they were written with.
+    """
+    with Session(engine) as session:
+        lots = session.exec(select(Lot).order_by(Lot.method, Lot.source_ref)).all()
+        closures = session.exec(
+            select(LotClosure).order_by(
+                LotClosure.method, LotClosure.lot_source_ref, LotClosure.sale_source_ref
+            )
+        ).all()
+    return [row.model_dump() for row in (*lots, *closures)]
+
+
 def _without_id(row: Lot | LotClosure) -> dict[str, object]:
     return {field: value for field, value in row.model_dump().items() if field != "id"}
 
@@ -170,9 +228,21 @@ class TestTheStandingInvariant:
     def test_attributed_charges_equal_ledger_charges(self, loaded: Engine) -> None:
         """Sec 11.2 #4, asserted in production code rather than only in tests. If
         apportionment ever loses a cent, the rebuild refuses rather than writing a
-        set of lots whose fees do not add up to what was actually paid."""
+        set of lots whose fees do not add up to what was actually paid.
+
+        Both sides are compared against an expectation computed in the test, not
+        against each other: `rebuild()` raises whenever its two totals differ, so
+        `charges_attributed == charges_in_ledger` cannot fail and says nothing about
+        whether either figure is right.
+        """
+        expected = _charges_the_broker_took(loaded)
+        # The golden fixture's own total, so a change that zeroed BOTH sides of the
+        # equality would be caught rather than passing as 0 == 0.
+        assert expected == D("17.77")
+
         result = rebuild(loaded, "FIFO")
-        assert result.charges_attributed == result.charges_in_ledger
+        assert result.charges_in_ledger == expected
+        assert result.charges_attributed == expected
 
     def test_a_charge_the_matcher_cannot_see_stops_the_rebuild(
         self, loaded: Engine, monkeypatch: pytest.MonkeyPatch
@@ -204,6 +274,31 @@ class TestTheStandingInvariant:
             assert session.exec(select(Lot)).all() == []
             assert session.exec(select(LotClosure)).all() == []
 
+    def test_a_refusal_leaves_the_PREVIOUS_good_rows_intact(
+        self, loaded: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The destructive case, which nothing else on this branch covers.
+
+        `test_a_refused_rebuild_writes_nothing` runs against a never-rebuilt
+        database, so it says nothing about a refusal that arrives AFTER a good
+        rebuild -- and that is the one that can destroy data. `rebuild()` is correct
+        today only because it raises before opening the write session: a single line
+        of ordering. Move the guard below the deletes and the derived tables are
+        wiped by a rebuild that then refuses to refill them.
+
+        Row identities are compared too, not only contents: rewriting the same rows
+        with fresh uuids would also be a write, and would also be wrong.
+        """
+        rebuild(loaded, "FIFO")
+        before = _full_snapshot(loaded)
+        assert before
+
+        _drop_one_fills_charges(monkeypatch)
+        with pytest.raises(ChargeMismatch):
+            rebuild(loaded, "FIFO")
+
+        assert _full_snapshot(loaded) == before
+
 
 class TestDeterminism:
     def test_rebuilding_twice_produces_identical_rows(self, loaded: Engine) -> None:
@@ -228,11 +323,20 @@ class TestDeterminism:
         assert first_closures == second_closures
 
     def test_a_rebuild_replaces_rather_than_appends(self, loaded: Engine) -> None:
+        """The row COUNT must not move across two rebuilds.
+
+        The previous form asserted that every lot's `source_ref` was distinct, which
+        `uq_lot_method_ref` makes true whatever `rebuild()` does -- an appending
+        rebuild would have died as an IntegrityError inside `commit()`, never
+        reaching the assertion. `lot_closure` carries no such constraint, so
+        counting is the check that actually distinguishes replacing from appending.
+        """
         rebuild(loaded, "FIFO")
+        first = _row_counts(loaded, "FIFO")
+        assert first[0] > 0 and first[1] > 0
+
         rebuild(loaded, "FIFO")
-        with Session(loaded) as session:
-            lots = session.exec(select(Lot).where(Lot.method == "FIFO")).all()
-        assert len({lot.source_ref for lot in lots}) == len(lots)
+        assert _row_counts(loaded, "FIFO") == first
 
     def test_the_three_methods_coexist(self, loaded: Engine) -> None:
         """Switching method must not destroy the other two, or the UI switcher

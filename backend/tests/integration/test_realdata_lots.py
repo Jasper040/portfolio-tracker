@@ -22,7 +22,7 @@ from app.analytics.rebuild import rebuild
 from app.db import create_engine_and_tables
 from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
 from app.ingest.importer import ensure_default_account, import_degiro_export
-from app.models.ledger import Lot, LotClosure
+from app.models.ledger import Lot, LotClosure, Transaction
 
 EXPORT = Path(__file__).parents[3] / "degiro-export"
 ANSWERS = Path(__file__).parents[3] / "config" / "corporate_actions.yaml"
@@ -52,6 +52,33 @@ def _lots(engine: Engine, isin: str) -> list[Lot]:
         return list(
             session.exec(select(Lot).where(Lot.method == "FIFO", Lot.isin == isin)).all()
         )
+
+
+def _charges_the_broker_took(engine: Engine) -> Decimal:
+    """The ledger's charge total, computed here rather than by the production code.
+
+    `rebuild()` raises whenever its two totals differ, so
+    `charges_attributed == charges_in_ledger` cannot fail -- it is only reachable
+    once it is already true. This restates the predicate and the sign flip in full
+    rather than calling `is_share_movement` or `charges_of`, so the assertion below
+    compares two independently derived numbers instead of one number with itself.
+    """
+    with Session(engine) as session:
+        rows = session.exec(select(Transaction)).all()
+
+    total = D("0.00")
+    for row in rows:
+        counts = (
+            row.is_economic
+            and row.isin is not None
+            and row.quantity is not None
+            and row.quantity != 0
+            and row.value_base is not None
+        )
+        if not counts:
+            continue
+        total += -row.fee_base - (row.autofx_fee_base or D("0.00")) - row.tax_base
+    return total
 
 
 def test_orion_holds_thirty_two_shares(rebuilt: Engine) -> None:
@@ -100,9 +127,22 @@ def test_every_position_matches_the_brokers_own_statement(rebuilt: Engine) -> No
 
 
 def test_the_standing_charge_invariant_holds_on_real_data(rebuilt: Engine) -> None:
-    """Sec 11.2 #4 across 112 real trades, 105 order ids and four currencies."""
+    """Sec 11.2 #4 across 112 real trades, 105 order ids and four currencies.
+
+    This is the test the acceptance run cites for the invariant, so it must not be
+    the tautology `rebuild()` guarantees. The expected total is summed from the
+    ledger rows here and both of the rebuild's own figures are compared to it.
+    """
+    expected = _charges_the_broker_took(rebuilt)
+    # The owner really did pay something across 112 trades, so a change that zeroed
+    # both sides of the equality would be caught rather than passing as 0 == 0. The
+    # figure itself is not hardcoded: it is the broker's, and it belongs in the
+    # export rather than in git.
+    assert expected > D("0")
+
     result = rebuild(rebuilt, "FIFO")
-    assert result.charges_attributed == result.charges_in_ledger
+    assert result.charges_in_ledger == expected
+    assert result.charges_attributed == expected
 
 
 @pytest.mark.parametrize("method", ["FIFO", "LIFO", "HIFO"])
