@@ -283,12 +283,40 @@ reproducible without re-answering.
 Seeded from the real data: ORN 10:1 split (2025-02-18), Meridian Mining product change
 (2026-08-14).
 
+**The ratio is derived, not recorded.** A resolution answers one question — is this
+an event or a trade — and nothing more. The ratio is already in the export: the
+suppressed legs are −1 share out and +10 in, which is 10:1. Deriving it keeps the
+ratio broker truth and keeps the answers file to decisions only; asking the operator
+to type `10:1` beside a pair that already says so invites a typo that no test can
+catch, because both numbers would look plausible.
+
 ### 6.4 Fee attribution
 
 Rows are grouped into economic orders on `(order_ref, trade_datetime, isin)`, falling
 back to a synthetic key when `order_ref` is blank. Fees and trade-linked taxes are
 attributed **at order level**, then pro-rata by value across the closures the order
-produces. Buy fees capitalise into the lot at open; sell fees reduce proceeds.
+produces.
+
+**Fees are attributed to a lot but never capitalised into its cost basis.**
+Cost basis is `quantity × price` — the trade value, excluding fees. Fees ride
+alongside as their own figure and are deducted from P&L, so every realised number
+decomposes into three things you can read separately: what the stock did, what the
+broker charged, and what is left.
+
+*Changed 2026-09-06, on the owner's decision.* This section previously said buy fees
+capitalise into the lot at open and sell fees reduce proceeds. That contradicted
+§11.2, whose acceptance figure for the ORN lot (€655.30) is `value_base` — the
+trade value with fees excluded — and it contradicted `domain/lots.py`, where
+`Closure.pnl` and `Closure.return_pct` already measured against a fee-free basis
+while `OpenLot.cost` alone added fees in. Capitalising hides the cost: a lot bought
+at €655.30 with €4.18 of charges reads as €659.48 and the €4.18 is gone. The
+arithmetic of net P&L is identical either way; what changes is whether the fee is
+still visible when you ask what you paid.
+
+The three charge types stay distinct all the way to the lot, because they answer
+different questions: `fee_base` is the broker's commission, `autofx_fee_base` is
+what the currency conversion cost, and `tax_base` is tax paid and separately
+reportable.
 
 Portfolio-level fees (`Aansluitingskosten`) are never attributed to a lot. They appear in
 portfolio cost totals and reduce TWR/MWR, not per-lot P&L.
