@@ -1,4 +1,4 @@
-import type { TransactionPage } from "./types";
+import type { ClosurePage, LotMethodTag, LotPage, TransactionPage } from "./types";
 
 // Falls back to the local dev API when VITE_API_BASE is not set, so the app keeps
 // working out of the box while still being deployable against a different backend.
@@ -24,4 +24,34 @@ export async function fetchTransactions(query: TransactionQuery = {}): Promise<T
     throw new Error(`Failed to load transactions: ${response.status} ${response.statusText}`);
   }
   return (await response.json()) as TransactionPage;
+}
+
+export interface LotQuery {
+  isin?: string;
+  limit?: number;
+  offset?: number;
+}
+
+async function getPage<T>(path: string, method: LotMethodTag, query: LotQuery): Promise<T> {
+  const { isin, limit = 500, offset = 0 } = query;
+  const params = new URLSearchParams({
+    method,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (isin) params.set("isin", isin);
+
+  const response = await fetch(`${BASE}${path}?${params}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load ${path}: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as T;
+}
+
+export function fetchLots(method: LotMethodTag, query: LotQuery = {}): Promise<LotPage> {
+  return getPage<LotPage>("/api/lots", method, query);
+}
+
+export function fetchClosures(method: LotMethodTag, query: LotQuery = {}): Promise<ClosurePage> {
+  return getPage<ClosurePage>("/api/closures", method, query);
 }

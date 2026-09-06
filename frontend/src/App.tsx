@@ -18,6 +18,7 @@ import { Benchmarks } from "./screens/Benchmarks";
 import { Dashboard } from "./screens/Dashboard";
 import { Dividends } from "./screens/Dividends";
 import { ImportHealth } from "./screens/ImportHealth";
+import { Lots } from "./screens/Lots";
 import { Positions } from "./screens/Positions";
 import { Settings } from "./screens/Settings";
 import { StockDetail } from "./screens/StockDetail";
@@ -89,7 +90,7 @@ export default function App() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <ModelledBadge />
               <span style={{ fontSize: 11, color: c.textFaint }}>
-                Lots, prices, dividends and benchmarks are computed from a modelled dataset. Only{" "}
+                Prices, dividends and benchmarks are computed from a modelled dataset.{" "}
                 <button
                   type="button"
                   onClick={() => setTab("tx")}
@@ -97,7 +98,15 @@ export default function App() {
                 >
                   Transactions
                 </button>{" "}
-                reads the live ledger.
+                and{" "}
+                <button
+                  type="button"
+                  onClick={() => setTab("lots")}
+                  style={{ all: "unset", cursor: "pointer", color: c.accent }}
+                >
+                  Lots
+                </button>{" "}
+                read the live ledger.
               </span>
             </div>
           )}
@@ -114,6 +123,7 @@ export default function App() {
             />
           )}
           {tab === "tx" && <Transactions />}
+          {tab === "lots" && <Lots method={method} />}
           {tab === "detail" && (
             <StockDetail
               data={data}
