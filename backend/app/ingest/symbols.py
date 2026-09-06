@@ -45,7 +45,7 @@ from app.domain.symbols import (
     judge,
 )
 from app.models.market import SymbolReview
-from app.providers.base import PriceProvider, SymbolResolver
+from app.providers.base import PriceProvider, SymbolCandidate, SymbolResolver
 
 #: What an operator writes to route an instrument to `manual_prices.csv`.
 MANUAL_ANSWER = "manual"
@@ -193,7 +193,7 @@ def instrument_names(rows: Sequence[PricedRow]) -> dict[str, str]:
 
 
 def _candidate_series(
-    isin: str, resolver: SymbolResolver, prices: PriceProvider
+    candidates: Sequence[SymbolCandidate], prices: PriceProvider
 ) -> list[CandidateSeries]:
     """Fetch a series for each candidate ticker, so the ledger can judge it.
 
@@ -202,7 +202,7 @@ def _candidate_series(
     the truth is "nothing came back at all".
     """
     found: list[CandidateSeries] = []
-    for candidate in resolver.candidates(isin):
+    for candidate in candidates:
         series = prices.full_series(candidate.symbol)
         if series is None or not series.points:
             continue
@@ -236,6 +236,13 @@ def resolve_symbols(
     resolved: dict[str, str | None] = {}
     pending: list[PendingSymbol] = []
 
+    # One batch call for everything an answer file entry did not already
+    # settle -- a deterministic, sorted list, never a set, so the resolver's
+    # positional match has something stable to match against. An instrument
+    # already answered is never in this list and so is never probed.
+    to_probe = [isin for isin in sorted(by_isin) if isin not in answers]
+    candidates_by_isin = resolver.candidates_for(to_probe)
+
     for isin in sorted(by_isin):
         if isin in answers:
             resolved[isin] = answers[isin].symbol
@@ -243,7 +250,9 @@ def resolve_symbols(
 
         trades = by_isin[isin]
         for_this: Sequence[Split] = [s for s in splits if s.isin == isin]
-        verdicts = judge(_candidate_series(isin, resolver, prices), trades, for_this)
+        verdicts = judge(
+            _candidate_series(candidates_by_isin.get(isin, ()), prices), trades, for_this
+        )
 
         chosen = accepted_symbol(verdicts)
         if chosen is not None:

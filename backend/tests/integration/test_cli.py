@@ -132,6 +132,8 @@ class TestFetchPrices:
         # -- that the command actually calls. Patching the source module would
         # leave the CLI's own reference pointing at the real one, and this test
         # would make real network calls to OpenFIGI and Yahoo.
+        from collections.abc import Sequence
+
         import app.cli as cli_module
         from app.ingest.prices import Providers
         from app.providers.base import PricePoint, PriceSeries, SymbolCandidate
@@ -142,12 +144,22 @@ class TestFetchPrices:
             name = "stub"
 
             def candidates(self, isin: str) -> tuple[SymbolCandidate, ...]:
-                return (
-                    SymbolCandidate(
-                        symbol="EXA2S.DE", name="Example 2x Short", exchange_code="GY",
-                        source="stub",
-                    ),
-                )
+                return self.candidates_for([isin])[isin]
+
+            def candidates_for(
+                self, isins: Sequence[str]
+            ) -> dict[str, tuple[SymbolCandidate, ...]]:
+                return {
+                    isin: (
+                        SymbolCandidate(
+                            symbol="EXA2S.DE",
+                            name="Example 2x Short",
+                            exchange_code="GY",
+                            source="stub",
+                        ),
+                    )
+                    for isin in isins
+                }
 
         class Prices:
             name = "stub"

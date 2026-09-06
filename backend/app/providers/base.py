@@ -100,6 +100,12 @@ class SymbolResolver(Protocol):
         """Every ticker this resolver associates with `isin`, best guess first."""
         ...
 
+    def candidates_for(self, isins: Sequence[str]) -> dict[str, tuple[SymbolCandidate, ...]]:
+        """Candidates for many ISINs at once. Every input ISIN appears in the
+        result, mapping to an empty tuple when the provider knows nothing
+        about it."""
+        ...
+
 class PriceProvider(Protocol):
     name: str
 

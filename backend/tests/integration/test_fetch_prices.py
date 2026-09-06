@@ -17,6 +17,7 @@ Everything runs against stub providers. CI never touches the network.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -54,10 +55,16 @@ class StubResolver:
         self._by_isin = by_isin
 
     def candidates(self, isin: str) -> tuple[SymbolCandidate, ...]:
-        return tuple(
-            SymbolCandidate(symbol=s, name="Example", exchange_code="NA", source="stub")
-            for s in self._by_isin.get(isin, ())
-        )
+        return self.candidates_for([isin])[isin]
+
+    def candidates_for(self, isins: Sequence[str]) -> dict[str, tuple[SymbolCandidate, ...]]:
+        return {
+            isin: tuple(
+                SymbolCandidate(symbol=s, name="Example", exchange_code="NA", source="stub")
+                for s in self._by_isin.get(isin, ())
+            )
+            for isin in isins
+        }
 
 class StubPrices:
     name = "stub"

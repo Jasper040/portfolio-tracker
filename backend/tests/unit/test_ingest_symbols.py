@@ -9,6 +9,7 @@ puts a badly wrong number on the chart with no clue that it is wrong.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -56,12 +57,22 @@ class StubResolver:
 
     def __init__(self, by_isin: dict[str, tuple[str, ...]]) -> None:
         self._by_isin = by_isin
+        self.probed: list[str] = []
+        self.batches = 0
 
     def candidates(self, isin: str) -> tuple[SymbolCandidate, ...]:
-        return tuple(
-            SymbolCandidate(symbol=s, name="Example", exchange_code="NA", source="stub")
-            for s in self._by_isin.get(isin, ())
-        )
+        return self.candidates_for([isin])[isin]
+
+    def candidates_for(self, isins: Sequence[str]) -> dict[str, tuple[SymbolCandidate, ...]]:
+        self.batches += 1
+        self.probed.extend(isins)
+        return {
+            isin: tuple(
+                SymbolCandidate(symbol=s, name="Example", exchange_code="NA", source="stub")
+                for s in self._by_isin.get(isin, ())
+            )
+            for isin in isins
+        }
 
 
 class StubPrices:
@@ -244,14 +255,41 @@ class TestResolution:
         to second-guess them, and would quarantine their answer if the network
         happened to disagree."""
         prices = StubPrices({})
+        resolver = StubResolver({"NL0000000001": ("EXA.AS",)})
         report = resolve_symbols(
             self.TRADES,
             answers={"NL0000000001": _answer("NL0000000001", "EXA.AS")},
-            resolver=StubResolver({"NL0000000001": ("EXA.AS",)}),
+            resolver=resolver,
             prices=prices,
         )
         assert report.resolved == {"NL0000000001": "EXA.AS"}
         assert prices.asked == []
+        assert resolver.probed == []
+
+    def test_resolves_every_unanswered_instrument_in_one_batch_call(self) -> None:
+        """The fix this suite exists to pin: `resolve_symbols` gathers every
+        unanswered ISIN and asks for all of them in a single `candidates_for`
+        call, rather than one `candidates` call per instrument."""
+        rows = [
+            *self.TRADES,
+            Row(
+                "c",
+                date(2025, 1, 6),
+                isin="US0000000404",
+                product_name="Other Holdings",
+            ),
+        ]
+        other = series("OTH", {date(2025, 1, 6): "20.00"})
+        resolver = StubResolver(
+            {"NL0000000001": ("EXA.AS",), "US0000000404": ("OTH",)}
+        )
+        prices = StubPrices({"EXA.AS": self.RIGHT, "OTH": other})
+
+        report = resolve_symbols(rows, answers={}, resolver=resolver, prices=prices)
+
+        assert resolver.batches == 1
+        assert set(resolver.probed) == {"NL0000000001", "US0000000404"}
+        assert report.resolved == {"NL0000000001": "EXA.AS", "US0000000404": "OTH"}
 
     def test_an_instrument_answered_manual_resolves_to_none(self) -> None:
         report = resolve_symbols(
