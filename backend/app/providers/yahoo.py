@@ -20,6 +20,27 @@ Three parsing details decide whether the numbers are right, and each has a test:
   ASX bar stamped 23:00 UTC is the next day in Sydney; read as a UTC date the
   whole series shifts back by one, putting prices on public holidays and
   misaligning every trade the discriminator checks. `meta.gmtoffset` is the fix.
+
+A `None` return and a `ProviderError` mean different things, and most of what
+calls this module is candidate probing, not a known-good lookup: symbol
+resolution builds a batch of speculative tickers from an exchange-suffix map and
+fetches every one, expecting most to be wrong (M2 spec section 6). When a
+`result` comes back with a missing or unusable component -- no `meta.currency`,
+no `timestamp`/`close` arrays, or an `adjclose` that is missing, not a list, or a
+different length from `close` -- that is Yahoo answering a half-known ticker
+with a stub, and it means exactly what an absent result means: this symbol has
+no usable series. It returns `None` and the candidate is dropped, same as a 404.
+Raising there would let one wrong guess out of a hundred abort the whole
+backfill, which defeats the purpose of probing at all.
+`ProviderError` stays reserved for what probing cannot explain away: a transport
+failure, a non-404/422 HTTP error, and a response with no `chart` key at all --
+that last one is not a bad guess, it is Yahoo answering in a shape this module
+does not recognise. A wholesale schema change of that kind cannot hide behind
+`None` either: every symbol would come back with no usable series, every
+instrument would fail to resolve, and `fetch-prices` would refuse to complete
+with every instrument sitting in the symbol quarantine, asking the owner to
+answer them by hand. The failure still surfaces -- as a question instead of a
+crash, and loudly the moment it is a real one instead of a wrong candidate.
 """
 
 from __future__ import annotations
@@ -100,7 +121,11 @@ def _parse(symbol: str, payload: Any) -> PriceSeries | None:
     meta = result.get("meta") or {}
     currency = str(meta.get("currency") or "").upper()
     if not currency:
-        raise ProviderError(f"yahoo: {symbol}: response states no currency")
+        # A stub result for a half-known candidate: no currency means no usable
+        # series, the same outcome as no result at all. Most candidates are
+        # wrong by construction (see module docstring); this must not abort
+        # the whole probe.
+        return None
 
     # Seconds to add to a UTC timestamp to reach the exchange's local clock.
     offset = int(meta.get("gmtoffset") or 0)
@@ -113,12 +138,15 @@ def _parse(symbol: str, payload: Any) -> PriceSeries | None:
     adj_closes = adjusted.get("adjclose")
 
     if not isinstance(stamps, list) or not isinstance(closes, list):
-        raise ProviderError(f"yahoo: {symbol}: response carries no close series")
+        # Same reasoning: a candidate stub with no close series has no usable
+        # series, not a schema violation.
+        return None
     if not isinstance(adj_closes, list) or len(adj_closes) != len(closes):
         # Falling back to the plain close here would put a dividend-unadjusted
         # number in the total-return column, and Sec 7.5's whole point is that
-        # the two must never be confused.
-        raise ProviderError(f"yahoo: {symbol}: adjusted and plain closes disagree in length")
+        # the two must never be confused. That makes the series unusable, not
+        # the response malformed -- the candidate is dropped, not fatal.
+        return None
 
     points: list[PricePoint] = []
     for stamp, close, adj_close in zip(stamps, closes, adj_closes, strict=True):

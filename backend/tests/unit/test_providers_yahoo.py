@@ -146,10 +146,57 @@ class TestNoSeries:
         )
 
     def test_a_server_error_raises_instead(self) -> None:
+        """A non-200 status other than 404/422 is a transport-level failure, not
+        a candidate verdict, and must still stop the run."""
         with pytest.raises(ProviderError):
             YahooPrices(client_returning({}, status=500)).full_series("EXA.AS")
 
-    def test_a_response_missing_the_arrays_raises(self) -> None:
+    def test_a_result_with_no_currency_answers_nothing(self) -> None:
+        """The exact shape that broke a real run: Yahoo answers a half-known
+        candidate ticker with a stub result carrying no `meta.currency`. That
+        means this symbol has no usable series -- the same outcome as no result
+        at all -- and must not abort the whole probe (M2 spec section 6)."""
+        assert (
+            YahooPrices(client_returning(fixture("yahoo_chart_no_currency.json"))).full_series(
+                "EXC.DE"
+            )
+            is None
+        )
+
+    def test_a_response_missing_the_arrays_answers_nothing(self) -> None:
         payload = {"chart": {"result": [{"meta": {"currency": "EUR", "gmtoffset": 0}}]}}
+        assert YahooPrices(client_returning(payload)).full_series("EXA.AS") is None
+
+    def test_adjclose_of_a_different_length_than_close_answers_nothing(self) -> None:
+        """Falling back to the plain close here would put a dividend-unadjusted
+        number in the total-return column (Sec 7.5). That makes the series
+        unusable, not the response malformed -- the candidate is dropped."""
+        payload = {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"currency": "EUR", "gmtoffset": 0},
+                        "timestamp": [1736150400, 1736236800],
+                        "indicators": {
+                            "quote": [{"close": [12.5, 12.75]}],
+                            "adjclose": [{"adjclose": [12.2]}],
+                        },
+                    }
+                ]
+            }
+        }
+        assert YahooPrices(client_returning(payload)).full_series("EXA.AS") is None
+
+    def test_a_response_with_no_chart_key_at_all_raises(self) -> None:
+        """Not a bad guess: a response shaped nothing like the documented
+        endpoint is a schema change, and must still be loud."""
         with pytest.raises(ProviderError):
-            YahooPrices(client_returning(payload)).full_series("EXA.AS")
+            YahooPrices(client_returning({"unexpected": "shape"})).full_series("EXA.AS")
+
+    def test_a_transport_error_raises(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused", request=request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        with pytest.raises(ProviderError):
+            YahooPrices(client).full_series("EXA.AS")
