@@ -14,7 +14,9 @@ from decimal import Decimal
 
 import pytest
 
-from app.domain.splits import Split, derive_splits
+from app.domain.charges import Charges
+from app.domain.lots import LotTransaction
+from app.domain.splits import Split, apply_splits, derive_splits
 from tests.unit.test_orders import row  # the shared LedgerRow stand-in
 
 D = Decimal
@@ -99,3 +101,81 @@ class TestGuards:
         ]
         with pytest.raises(ValueError, match="zero"):
             derive_splits(rows)
+
+
+class TestApplication:
+    def _fill(self, ref: str, day: int, quantity: str, price: str) -> LotTransaction:
+        return LotTransaction(
+            id=ref,
+            trade_date=date(2024, day, 1),
+            side="BUY",
+            quantity=D(quantity),
+            price=D(price),
+            charges=Charges(commission=D("2.00")),
+        )
+
+    SPLIT = Split(isin="X", effective_on=date(2024, 6, 10), ratio=D("10"))
+
+    def test_multiplies_the_quantity_of_a_lot_opened_before_it(self) -> None:
+        [fill] = apply_splits([self._fill("a", 5, "1", "655.30")], [self.SPLIT])
+        assert fill.quantity == D("10")
+
+    def test_divides_the_price_by_the_same_ratio(self) -> None:
+        [fill] = apply_splits([self._fill("a", 5, "1", "655.30")], [self.SPLIT])
+        assert fill.price == D("65.530")
+
+    def test_leaves_the_cost_basis_exactly_unchanged(self) -> None:
+        """The property that makes this safe. Sec 7.1: a split changes how many
+        pieces the holding is cut into, never what was paid for it."""
+        original = self._fill("a", 5, "1", "655.30")
+        [adjusted] = apply_splits([original], [self.SPLIT])
+        assert adjusted.quantity * adjusted.price == original.quantity * original.price
+
+    def test_leaves_charges_alone(self) -> None:
+        """A split costs nothing. Scaling charges would invent a cost."""
+        [fill] = apply_splits([self._fill("a", 5, "1", "655.30")], [self.SPLIT])
+        assert fill.charges.commission == D("2.00")
+
+    def test_does_not_touch_a_lot_opened_after_it(self) -> None:
+        """The 2026 ORN purchases were made in post-split shares already."""
+        [fill] = apply_splits([self._fill("a", 8, "10", "143.50")], [self.SPLIT])
+        assert fill.quantity == D("10")
+        assert fill.price == D("143.50")
+
+    def test_does_not_touch_a_lot_opened_on_the_day_itself(self) -> None:
+        """DeGiro books the adjustment on the split date, so a trade that same day
+        is already in new shares. Adjusting it would double-count the split.
+
+        `_fill`'s `day` parameter feeds the month slot of `date(2024, day, 1)`, so it
+        cannot land on `SPLIT.effective_on` (the 10th) itself -- the fixture is
+        built directly on that exact date instead.
+        """
+        same_day_fill = LotTransaction(
+            id="a",
+            trade_date=self.SPLIT.effective_on,
+            side="BUY",
+            quantity=D("10"),
+            price=D("90.666"),
+            charges=Charges(commission=D("2.00")),
+        )
+        [fill] = apply_splits([same_day_fill], [self.SPLIT])
+        assert fill.quantity == D("10")
+
+    def test_two_splits_compound_in_order(self) -> None:
+        splits = [
+            Split(isin="X", effective_on=date(2024, 3, 1), ratio=D("2")),
+            Split(isin="X", effective_on=date(2024, 6, 10), ratio=D("10")),
+        ]
+        [fill] = apply_splits([self._fill("a", 1, "1", "100.00")], splits)
+        assert fill.quantity == D("20")
+        assert fill.quantity * fill.price == D("100.00")
+
+    def test_a_sale_before_the_split_is_adjusted_too(self) -> None:
+        """Otherwise a pre-split sale of 1 share would try to consume 1 of the 10
+        the same split created, and the position would end 9 shares too high."""
+        sale = LotTransaction(
+            id="s", trade_date=date(2024, 5, 1), side="SELL",
+            quantity=D("1"), price=D("900.00"), charges=Charges.zero(),
+        )
+        [adjusted] = apply_splits([sale], [self.SPLIT])
+        assert adjusted.quantity == D("10")

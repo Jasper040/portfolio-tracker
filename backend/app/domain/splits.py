@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
+from app.domain.lots import LotTransaction
 from app.domain.orders import LedgerRow
 
 _ZERO = Decimal("0")
@@ -68,3 +69,39 @@ def derive_splits(rows: Sequence[LedgerRow]) -> list[Split]:
         splits.append(Split(isin=isin, effective_on=effective_on, ratio=ratio))
 
     return sorted(splits, key=lambda split: (split.effective_on, split.isin))
+
+
+def apply_splits(
+    fills: Sequence[LotTransaction], splits: Sequence[Split]
+) -> list[LotTransaction]:
+    """Restate pre-split fills in post-split shares.
+
+    Sec 7.1 phrases this as adjusting open lots. Doing it to the transactions before
+    matching gets the same result and leaves the matcher untouched, because
+    `quantity * price` is invariant under the adjustment -- the cost basis cannot
+    drift no matter how many splits compound.
+
+    Strictly before, never on the day: DeGiro books the adjustment on the split date
+    itself, so a trade that day is already denominated in new shares and scaling it
+    would count the split twice.
+
+    Sales are adjusted as well as buys. A pre-split sale of one old share is a sale
+    of ten new ones; leaving it alone would consume one of the ten the split just
+    created and leave the position nine shares too high.
+
+    `splits` must be for this instrument only, oldest first -- `derive_splits`
+    returns them that way and the caller filters by ISIN.
+    """
+    adjusted = list(fills)
+    for split in splits:
+        adjusted = [
+            replace(
+                fill,
+                quantity=fill.quantity * split.ratio,
+                price=fill.price / split.ratio,
+            )
+            if fill.trade_date < split.effective_on
+            else fill
+            for fill in adjusted
+        ]
+    return adjusted
