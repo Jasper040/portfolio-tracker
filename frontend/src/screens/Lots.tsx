@@ -67,9 +67,16 @@ export interface LotsProps {
   method: LotMethodTag;
 }
 
+/** Both pages, or neither. They are fetched together and rendered together, so
+ *  holding them in one state value makes "the lots page arrived but the closures
+ *  page did not" unrepresentable rather than merely unlikely. */
+interface LedgerPages {
+  lots: LotPage;
+  closures: ClosurePage;
+}
+
 export function Lots({ method }: LotsProps) {
-  const [lots, setLots] = useState<LotPage | null>(null);
-  const [closures, setClosures] = useState<ClosurePage | null>(null);
+  const [pages, setPages] = useState<LedgerPages | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -80,8 +87,7 @@ export function Lots({ method }: LotsProps) {
     Promise.all([fetchLots(method), fetchClosures(method)])
       .then(([lotPage, closurePage]) => {
         if (cancelled) return;
-        setLots(lotPage);
-        setClosures(closurePage);
+        setPages({ lots: lotPage, closures: closurePage });
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -109,10 +115,23 @@ export function Lots({ method }: LotsProps) {
     );
   }
 
-  if (!lots?.items.length) {
+  if (!pages) {
+    // Not loading, not errored, and nothing set. Unreachable while the effect
+    // resolves or rejects, but saying so beats rendering empty tables that would
+    // read as "you own nothing".
+    return <Notice tone="danger">The API returned no response.</Notice>;
+  }
+
+  const { lots, closures } = pages;
+
+  // Both, not just the lots. A portfolio that has been sold down to nothing has
+  // zero open lots and a full table of closures; gating on the lots alone would
+  // tell its owner there is nothing here while holding every realised trade they
+  // made.
+  if (!lots.items.length && !closures.items.length) {
     return (
       <Notice tone="neutral">
-        No lots yet. Import an export, then run{" "}
+        No lots or closures yet. Import an export, then run{" "}
         <span style={{ fontFamily: mono }}>
           python -m app.cli rebuild --method {method}
         </span>
@@ -128,7 +147,7 @@ export function Lots({ method }: LotsProps) {
             screen reports what the API said it computed. */}
         <MethodBadge method={lots.method} coverage={lots.coverage} />
         <span style={{ color: c.textMuted }}>
-          {lots.total} open lots · {closures?.total ?? 0} closures
+          {lots.total} open lots · {closures.total} closures
         </span>
       </div>
 
@@ -138,102 +157,110 @@ export function Lots({ method }: LotsProps) {
         Market value arrives with prices in M2.
       </Notice>
 
-      <TableFrame>
-        <Table>
-          <HeadRow columns={LOT_COLUMNS} />
-          <tbody>
-            {lots.items.map((lot, i) => (
-              <tr key={lot.id} style={{ background: rowBackground(i) }}>
-                <Td padding="8px 11px" nowrap>
-                  {lot.isin}
-                </Td>
-                <Td padding="8px 11px" nowrap>
-                  {shortDate(lot.opened_on)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimal(lot.quantity)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimal(lot.price, 2, 4)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimalEur(lot.cost_basis)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
-                  {decimalEur(lot.commission)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
-                  {decimalEur(lot.autofx)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
-                  {decimalEur(lot.tax)}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
-      </TableFrame>
+      {/* Each table renders only when it has rows. A header over an empty body
+          reads as a fact ("no open lots") in a place the reader expects data,
+          and a fully-sold portfolio legitimately has one of these and not the
+          other. */}
+      {lots.items.length > 0 && (
+        <TableFrame>
+          <Table>
+            <HeadRow columns={LOT_COLUMNS} />
+            <tbody>
+              {lots.items.map((lot, i) => (
+                <tr key={lot.id} style={{ background: rowBackground(i) }}>
+                  <Td padding="8px 11px" nowrap>
+                    {lot.isin}
+                  </Td>
+                  <Td padding="8px 11px" nowrap>
+                    {shortDate(lot.opened_on)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimal(lot.quantity)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimal(lot.price, 2, 4)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimalEur(lot.cost_basis)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                    {decimalEur(lot.commission)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                    {decimalEur(lot.autofx)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                    {decimalEur(lot.tax)}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </TableFrame>
+      )}
 
-      <TableFrame>
-        <Table>
-          <HeadRow columns={CLOSURE_COLUMNS} />
-          <tbody>
-            {(closures?.items ?? []).map((closure, i) => (
-              <tr key={closure.id} style={{ background: rowBackground(i) }}>
-                <Td padding="8px 11px" nowrap>
-                  {closure.isin}
-                </Td>
-                <Td padding="8px 11px" nowrap>
-                  {shortDate(closure.opened_on)}
-                </Td>
-                <Td padding="8px 11px" nowrap>
-                  {shortDate(closure.closed_on)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimal(closure.quantity)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimal(closure.open_price, 2, 4)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimal(closure.close_price, 2, 4)}
-                </Td>
-                <Td
-                  padding="8px 11px"
-                  align="right"
-                  numeric
-                  color={decimalIsNegative(closure.gross_pnl) ? c.negative : c.positive}
-                >
-                  {decimalEur(closure.gross_pnl)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
-                  {decimalEur(closure.commission)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
-                  {decimalEur(closure.autofx)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
-                  {decimalEur(closure.tax)}
-                </Td>
-                <Td
-                  padding="8px 11px"
-                  align="right"
-                  numeric
-                  color={decimalIsNegative(closure.pnl) ? c.negative : c.positive}
-                >
-                  {decimalEur(closure.pnl)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {decimalPercent(closure.return_pct)}
-                </Td>
-                <Td padding="8px 11px" align="right" numeric>
-                  {closure.holding_days}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </Table>
-      </TableFrame>
+      {closures.items.length > 0 && (
+        <TableFrame>
+          <Table>
+            <HeadRow columns={CLOSURE_COLUMNS} />
+            <tbody>
+              {closures.items.map((closure, i) => (
+                <tr key={closure.id} style={{ background: rowBackground(i) }}>
+                  <Td padding="8px 11px" nowrap>
+                    {closure.isin}
+                  </Td>
+                  <Td padding="8px 11px" nowrap>
+                    {shortDate(closure.opened_on)}
+                  </Td>
+                  <Td padding="8px 11px" nowrap>
+                    {shortDate(closure.closed_on)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimal(closure.quantity)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimal(closure.open_price, 2, 4)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimal(closure.close_price, 2, 4)}
+                  </Td>
+                  <Td
+                    padding="8px 11px"
+                    align="right"
+                    numeric
+                    color={decimalIsNegative(closure.gross_pnl) ? c.negative : c.positive}
+                  >
+                    {decimalEur(closure.gross_pnl)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                    {decimalEur(closure.commission)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                    {decimalEur(closure.autofx)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric color={c.textMuted}>
+                    {decimalEur(closure.tax)}
+                  </Td>
+                  <Td
+                    padding="8px 11px"
+                    align="right"
+                    numeric
+                    color={decimalIsNegative(closure.pnl) ? c.negative : c.positive}
+                  >
+                    {decimalEur(closure.pnl)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {decimalPercent(closure.return_pct)}
+                  </Td>
+                  <Td padding="8px 11px" align="right" numeric>
+                    {closure.holding_days}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </TableFrame>
+      )}
     </div>
   );
 }
