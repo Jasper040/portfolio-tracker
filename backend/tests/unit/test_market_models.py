@@ -23,6 +23,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -34,7 +35,7 @@ D = Decimal
 FETCHED = datetime(2026, 9, 6, 12, 0, 0)
 
 @pytest.fixture(name="engine")
-def _engine():
+def _engine() -> Engine:
     return create_engine_and_tables("sqlite://")
 
 def _price(**overrides) -> PriceDaily:
@@ -104,16 +105,40 @@ class TestFxDaily:
         assert row.rate == D("1.0854")
 
     def test_the_stored_rate_is_the_one_FxRate_divides_by(self, engine) -> None:
-        """The direction contract, asserted rather than commented.
+        """The direction contract, asserted against a persisted row, not a literal.
 
         1.0854 USD per 1 EUR means 108.54 USD is 100.00 EUR. If the reciprocal
         were stored, this would come out as 117.81 EUR -- wrong by 18% and
-        entirely believable.
+        entirely believable. The end-to-end direction guarantee is completed by
+        Task 5 (the ECB provider's own parse-direction test) and Task 9 (the
+        join, where multiplying instead of dividing yields 216.32 rather than
+        200.00); this test's job is to pin that a stored row's three columns
+        feed `FxRate` in that order.
         """
         from app.domain.money import FxRate, Money
 
+        with Session(engine) as session:
+            session.add(
+                FxDaily(
+                    id=uuid4(),
+                    from_ccy="USD",
+                    to_ccy="EUR",
+                    rate_date=date(2025, 3, 3),
+                    rate=D("1.0854"),
+                    source="ecb",
+                    fetched_at=FETCHED,
+                )
+            )
+            session.commit()
+
+        with Session(engine) as session:
+            stored = session.exec(select(FxDaily)).one()
+
         rate = FxRate(
-            from_currency="USD", to_currency="EUR", rate=D("1.0854"), as_of=date(2025, 3, 3)
+            from_currency=stored.from_ccy,
+            to_currency=stored.to_ccy,
+            rate=stored.rate,
+            as_of=stored.rate_date,
         )
         converted = rate.convert(Money(D("108.54"), "USD"))
         assert converted.currency == "EUR"
