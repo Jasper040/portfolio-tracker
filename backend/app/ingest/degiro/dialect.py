@@ -124,3 +124,47 @@ def parse_optional_decimal(raw: str) -> Decimal | None:
 
 def parse_dutch_date(raw: str) -> date:
     return datetime.strptime(raw.strip(), "%d-%m-%Y").date()
+
+
+class AcctCol:
+    """Verified positional indices for Account.csv.
+
+    The header names 12 fields but leaves two of them blank, and the blanks sit on
+    the wrong side of the amounts they belong to. The data is really
+    `date, time, value_date, product, isin, description, fx, change_ccy, change,
+    balance_ccy, balance, order_id` -- a currency column precedes each amount, while
+    the header reads `...,FX,Change,,Balance,,Order Id`. Mapping by name would put
+    the currency where the amount belongs on every single row.
+    """
+
+    DATE = 0
+    TIME = 1
+    VALUE_DATE = 2
+    PRODUCT = 3
+    ISIN = 4
+    DESCRIPTION = 5
+    FX = 6
+    CHANGE_CCY = 7
+    CHANGE = 8
+    BALANCE_CCY = 9
+    BALANCE = 10
+    ORDER_ID = 11
+
+
+# Same fields, same order, with the two unnamed currency columns given the name of
+# the amount they precede -- so `raw_json` keeps all twelve instead of silently
+# collapsing the two blanks into a single key.
+ACCOUNT_RAW_FIELDS: tuple[str, ...] = (
+    "Date",
+    "Time",
+    "Value date",
+    "Product",
+    "ISIN",
+    "Description",
+    "FX",
+    "Change currency",
+    "Change",
+    "Balance currency",
+    "Balance",
+    "Order Id",
+)
