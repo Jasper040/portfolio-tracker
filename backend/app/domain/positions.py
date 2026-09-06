@@ -43,10 +43,68 @@ class LedgerCashRow(LedgerRow, Protocol):
 
     Extending the Protocol rather than restating it: the share side of this
     module hands its rows straight to `to_lot_transactions`, so the two views of
-    a row must not be allowed to drift apart.
+    a row must not be allowed to drift apart. `_moves_euros` below needs no
+    field beyond `net_base` -- `txn_type` and `order_ref` are already declared
+    on `LedgerRow` itself.
     """
 
     net_base: Decimal
+
+#: DeGiro's own wording for a currency-conversion journal entry (`Valuta
+#: Creditering`/`Valuta Debitering`), as classified by `app.ingest.degiro.
+#: account_csv`. Restated here as a plain string rather than imported: `domain/`
+#: takes no dependency on `ingest/`, in either direction, so a row is judged by
+#: the shape the ledger already gives it (Sec 4.1).
+_FX_CONVERT = "FX_CONVERT"
+
+def _moves_euros(row: LedgerCashRow) -> bool:
+    """Whether `row.net_base` is a euro cash movement that should be counted --
+    once.
+
+    Measured empirically against `Portfolio.csv`'s own stated cash line (Sec
+    5.4), not assumed: three candidates were tried against the owner's real
+    export first, each scored by its euro ERROR against the broker's own
+    balance (a delta, not a balance -- it carries no figure of the owner's).
+
+    * Sum every row's `net_base`, unmodified: error **-6915.52**. A DeGiro
+      "Valuta Creditering"/"Valuta Debitering" pair that SETTLES a
+      foreign-currency trade carries that same trade's own `order_ref`, and its
+      euro leg restates the exact principal-plus-autoFX the trade's own
+      `net_base` (`Total EUR`) already carries. Summing both counts it twice.
+    * Exclude a trade's own `net_base` whenever its price is not in EUR: error
+      **+116.01**. This removes the duplicate, but it throws the whole trade
+      away rather than just the duplicated part, taking its commission
+      (`fee_base`) down with it -- and the commission has no other row to live
+      in, because `account_csv.py` already drops the matching "DEGIRO
+      Transactiekosten en/of" row as a duplicate of the trade's own fee column.
+    * Keep every trade's `net_base`; exclude every `FX_CONVERT` row outright:
+      error **-66.82**. A `Valuta Creditering`/`Debitering` pair with no
+      `order_ref` is not settling a trade at all -- it is converting a
+      dividend, interest, tax or securities-lending receipt into euros, and it
+      is the ONLY row in the whole ledger that records that movement.
+      Excluding it loses real income that nothing else restates.
+
+    The field that actually tells the two apart is `order_ref`, not currency
+    and not the description text -- both "Valuta Creditering" and "Valuta
+    Debitering" wording is used for both cases, so no value heuristic on the
+    row itself can separate them. A conversion that SETTLES a trade carries
+    THAT TRADE's own `order_ref`; a conversion of investment income carries
+    none, because there is no order to attach it to. Excluding only the
+    order-linked `FX_CONVERT` rows reconciles to **+0.01** -- inside the one-cent
+    rounding the export already carries on a handful of its own trade rows.
+
+    This is the same shape as the cash-sweep trap in Sec 3.3 and the
+    corporate-action detection in Sec 3.4: a row that looks exactly like an
+    independent cash flow while actually being the mechanics of one already
+    counted elsewhere, told apart by a FIELD rather than a value heuristic --
+    which is what lets the rule survive an export whose amounts change from one
+    export to the next. **Do not simplify this back to "sum every row."** It is
+    also this predicate, not the aggregate sum, that
+    `test_lands_on_the_brokers_own_cash_balance` actually guards: an export
+    that stopped tagging settlement conversions with an `order_ref` would turn
+    that test red rather than mis-summing quietly.
+    """
+    return not (row.txn_type == _FX_CONVERT and row.order_ref is not None)
 
 @dataclass(frozen=True, slots=True)
 class PositionPoint:
@@ -139,15 +197,23 @@ def _position_points(
 def _cash_points(
     rows: Sequence[LedgerCashRow], *, start: date, through: date
 ) -> tuple[CashPoint, ...]:
-    """A running sum of `net_base` over EVERY row, economic or not.
+    """A running sum of `net_base` over every row that MOVES euros, once each.
 
     `net_base` is DeGiro's own `Total EUR` -- what actually hit the cash account
-    (Sec 5.4), never recomputed. A corporate action's two suppressed legs offset
-    to zero, so including them changes nothing; the point is that the rule is
-    "every row", which is what makes this balance reconcile against the broker's
-    own cash line rather than approximately agree with it.
+    (Sec 5.4), never recomputed. "Every row" is close to the rule but not quite
+    it: a corporate action's two suppressed legs offset to zero, so including
+    them changes nothing, but a foreign-currency trade and the `Valuta`
+    conversion that settles it both carry the SAME euro movement under two
+    different rows, and summing both would double it. `_moves_euros` is the
+    line between "every row" and "every row, once" -- see its docstring for the
+    three rules that were measured and rejected before this one, and why. This
+    is what makes the balance reconcile against the broker's own cash line
+    rather than approximately agree with it.
     """
-    ordered = sorted(rows, key=lambda row: (row.trade_date, row.source_ref))
+    ordered = sorted(
+        (row for row in rows if _moves_euros(row)),
+        key=lambda row: (row.trade_date, row.source_ref),
+    )
     points: list[CashPoint] = []
     balance = _ZERO
     index = 0

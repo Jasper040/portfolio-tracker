@@ -248,6 +248,76 @@ class TestCash:
         ]
         assert daily_series(rows, through=date(2025, 1, 7)).cash[-1].balance_base == D("1000.00")
 
+    def test_a_foreign_trade_and_its_conversion_move_the_euros_once(self) -> None:
+        """A USD buy's own `net_base` already carries the full euro cost
+        (principal, autoFX and commission). Its settlement `Valuta Creditering`/
+        `Debitering` pair -- sharing the trade's own `order_ref` -- restates the
+        SAME euro leg a second time. Summing every row (the old rule) would
+        double it; `_moves_euros` must not."""
+        rows = [
+            Row(
+                source_ref="trade-1",
+                trade_date=date(2025, 1, 6),
+                isin="US0000000001",
+                quantity=D("2"),
+                value_base=D("-909.09"),
+                net_base=D("-909.09"),
+                order_ref="ord-1",
+                txn_type="BUY",
+            ),
+            # The EUR leg of the conversion that funded it: same order, same
+            # euro amount.
+            Row(
+                source_ref="fx-eur-leg",
+                trade_date=date(2025, 1, 6),
+                net_base=D("-909.09"),
+                order_ref="ord-1",
+                txn_type="FX_CONVERT",
+                quantity=None,
+            ),
+            # The USD leg: already zeroed upstream, since it is not a euro
+            # movement (account_csv.py normalises it that way before this
+            # module ever sees it).
+            Row(
+                source_ref="fx-usd-leg",
+                trade_date=date(2025, 1, 6),
+                net_base=ZERO,
+                order_ref="ord-1",
+                txn_type="FX_CONVERT",
+                quantity=None,
+            ),
+        ]
+        series = daily_series(rows, through=date(2025, 1, 6))
+        assert series.cash[-1].balance_base == D("-909.09")
+
+    def test_an_income_conversion_still_moves_the_euros(self) -> None:
+        """A dividend paid in a foreign currency has `net_base` zero on its own
+        row (account_csv.py zeroes any non-EUR change). The `Valuta Creditering`
+        that converts it into euros carries NO `order_ref` -- there is no order
+        to attach it to -- and is the only row in the ledger that records the
+        euro amount. Excluding every `FX_CONVERT` row (the mirror-image wrong
+        rule) would lose it."""
+        rows = [
+            Row(
+                source_ref="div-usd",
+                trade_date=date(2025, 1, 6),
+                net_base=ZERO,
+                order_ref=None,
+                txn_type="DIVIDEND",
+                quantity=None,
+            ),
+            Row(
+                source_ref="fx-credit",
+                trade_date=date(2025, 1, 6),
+                net_base=D("42.00"),
+                order_ref=None,
+                txn_type="FX_CONVERT",
+                quantity=None,
+            ),
+        ]
+        series = daily_series(rows, through=date(2025, 1, 6))
+        assert series.cash[-1].balance_base == D("42.00")
+
     def test_starts_on_the_first_ledger_day_not_on_the_first_position(self) -> None:
         """A deposit that sits in cash for a week is real money in the account.
         Starting the cash series at the first BUY would hide it."""
