@@ -131,15 +131,28 @@ class TestDeterminism:
         likes. This is the layer that imposes one, so this is where the property
         has to hold -- `match_lots` downstream raises on unordered input rather
         than sorting, precisely so the responsibility cannot drift.
+
+        Order `o1`'s three equal-quantity fills tie for the leftover cent of a
+        EUR 0.10 commission (0.10 / 3 -> 0.04/0.03/0.03, and which fill gets the
+        0.04 is exactly the tie `apportion` breaks by position). A fixture whose
+        charges divided evenly would pass whether or not fills are canonically
+        ordered before the split -- this shape is chosen so the assertion can
+        actually fail.
         """
         rows = [
-            row(source_ref="a", trade_date=date(2026, 5, 28), order_ref="o1"),
-            row(source_ref="b", trade_date=date(2026, 5, 29), order_ref="o2"),
-            row(source_ref="c", trade_date=date(2026, 5, 28), order_ref="o1"),
+            row(source_ref="a", order_ref="o1", quantity=D("1"), value_base=D("-10.00")),
+            row(source_ref="b", order_ref="o1", quantity=D("1"), value_base=D("-10.00")),
+            row(
+                source_ref="c",
+                order_ref="o1",
+                quantity=D("1"),
+                value_base=D("-10.00"),
+                fee_base=D("-0.10"),
+            ),
             row(source_ref="d", trade_date=date(2026, 5, 30), order_ref="o3"),
         ]
         shuffled = list(rows)
-        random.Random(11).shuffle(shuffled)
+        random.Random(0).shuffle(shuffled)
         assert to_lot_transactions(shuffled) == to_lot_transactions(rows)
 
     def test_two_fills_of_one_order_keep_a_stable_order(self) -> None:

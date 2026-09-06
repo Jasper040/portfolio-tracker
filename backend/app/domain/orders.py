@@ -15,10 +15,10 @@ Two conversions happen here and nowhere else:
 * **Sign.** The ledger stores a charge as a debit (negative). The domain layer
   counts money paid (positive).
 * **Currency.** `price_local` is USD on a US trade. Everything downstream is EUR, so
-  the price handed to the matcher is `value_base / quantity` -- the euro amount the
-  broker itself recorded, divided by the shares it bought. Deriving it from
-  `price_local` and `fx_rate` instead would recompute a number the export already
-  states, which Sec 5.4 forbids.
+  the price handed to the matcher is `abs(value_base) / abs(quantity)` -- the euro
+  amount the broker itself recorded, divided by the shares it bought. Deriving it
+  from `price_local` and `fx_rate` instead would recompute a number the export
+  already states, which Sec 5.4 forbids.
 
 Pure: rows in, fills out. `LedgerRow` is a Protocol, so `domain/` imports no ORM.
 """
@@ -115,6 +115,15 @@ def to_lot_transactions(rows: Sequence[LedgerRow]) -> dict[str, list[LotTransact
 
     by_isin: dict[str, list[LotTransaction]] = defaultdict(list)
     for fills in orders.values():
+        # Canonical order before any arithmetic that can break ties by position:
+        # `apportion`'s largest-remainder tie-break falls back to list index, so an
+        # order whose fills tie for the leftover cent must present them in the same
+        # sequence regardless of what order the ledger happened to hand them over
+        # in. `source_ref` is unique per row and stable across re-imports by
+        # construction (Sec 6.1), unlike `trade_date`, which two fills of one order
+        # share.
+        fills = sorted(fills, key=lambda row: row.source_ref)
+
         pooled = Charges.zero()
         for row in fills:
             pooled = pooled + _charges_of(row)
