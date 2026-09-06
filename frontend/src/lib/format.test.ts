@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ANNUALISED_MIN_HOLDING_DAYS,
+  annualisedPercent,
   costColor,
   daysBetween,
   decimal,
@@ -247,6 +249,39 @@ describe("sign colours", () => {
     expect(costColor(1)).toBe("#E5534B");
     expect(costColor(-1)).toBe("#3FB950");
     expect(costColor(1)).not.toBe(signColor(1));
+  });
+});
+
+describe("annualisedPercent", () => {
+  it("renders the figure once the holding period is long enough to mean something", () => {
+    expect(annualisedPercent("0.1834", ANNUALISED_MIN_HOLDING_DAYS)).toBe("18,34%");
+  });
+
+  it("declines to annualise a holding shorter than the threshold", () => {
+    // A 3-day 2% gain annualises to roughly 1.000%. Arithmetically correct and
+    // useless -- so the cell says nothing rather than saying something absurd.
+    expect(annualisedPercent("10.9876", 3)).toBe("—");
+  });
+
+  it("draws the line exactly at the threshold, not near it", () => {
+    expect(annualisedPercent("0.5", ANNUALISED_MIN_HOLDING_DAYS - 1)).toBe("—");
+    expect(annualisedPercent("0.5", ANNUALISED_MIN_HOLDING_DAYS)).toBe("50,00%");
+  });
+
+  it("renders an em-dash for a null figure however long the holding", () => {
+    // `Closure.annualised_return` is null for a same-day round trip and for a
+    // total loss. Length of holding cannot rescue either.
+    expect(annualisedPercent(null, 4000)).toBe("—");
+  });
+
+  it("uses the same separator and sign glyph as every other cell", () => {
+    // Not toFixed: that would emit "-12.34%" beside neighbours reading "1.234,56".
+    expect(annualisedPercent("-0.1234", 365)).toBe("−12,34%");
+  });
+
+  it("never parses the figure through a float", () => {
+    // 28 significant digits survive intact, which Number() could not carry.
+    expect(annualisedPercent("0.1234567890123456789012345678", 365)).toBe("12,35%");
   });
 });
 

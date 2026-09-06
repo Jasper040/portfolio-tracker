@@ -2,8 +2,8 @@
  *  real data.
  *
  *  Every figure here is formatted from the exact decimal string the API sent --
- *  money through `decimalEur`, the return through `decimalPercent`. Nothing on
- *  this screen is passed through `Number()`. See `api/types.ts` for why.
+ *  money through `decimalEur`, returns through `decimalPercent`. Nothing on this
+ *  screen is passed through `Number()`. See `api/types.ts` for why.
  *
  *  No market value here, and that is deliberate: a position's worth needs a price
  *  series, which is M2. Putting a cost basis under a heading that implied market
@@ -30,6 +30,8 @@ import {
 import { c, mono } from "../lib/theme";
 import {
   decimal,
+  ANNUALISED_MIN_HOLDING_DAYS,
+  annualisedPercent,
   decimalEur,
   decimalIsNegative,
   decimalPercent,
@@ -59,7 +61,10 @@ const CLOSURE_COLUMNS: readonly ColumnDef[] = [
   { label: "FX COST", align: "right" },
   { label: "TAX", align: "right" },
   { label: "NET P&L", align: "right" },
-  { label: "RETURN", align: "right" },
+  // One column, two figures: the period return and, under it, the same return
+  // scaled to a year. Stacking rather than adding a fourteenth column keeps the
+  // annualised figure beside the DAYS that make it readable.
+  { label: "RETURN / P.A.", align: "right" },
   { label: "DAYS", align: "right" },
 ];
 
@@ -154,7 +159,10 @@ export function Lots({ method }: LotsProps) {
       <Notice>
         Cost basis is what the shares cost. Commission, FX cost and tax sit beside it, never
         inside it, so a realised figure separates what the stock did from what the broker took.
-        Market value arrives with prices in M2.
+        The second line of each return is that return scaled to a year, shown only for holdings
+        of {ANNUALISED_MIN_HOLDING_DAYS} days or more &mdash; over a shorter period the figure is
+        arithmetically correct and misleading, so it reads &ldquo;&mdash;&rdquo; instead. Market
+        value arrives with prices in M2.
       </Notice>
 
       {/* Each table renders only when it has rows. A header over an empty body
@@ -250,7 +258,10 @@ export function Lots({ method }: LotsProps) {
                     {decimalEur(closure.pnl)}
                   </Td>
                   <Td padding="8px 11px" align="right" numeric>
-                    {decimalPercent(closure.return_pct)}
+                    <div>{decimalPercent(closure.return_pct)}</div>
+                    <div style={{ fontSize: 10, color: c.textFaint }}>
+                      {annualisedPercent(closure.annualised_return, closure.holding_days)}
+                    </div>
                   </Td>
                   <Td padding="8px 11px" align="right" numeric>
                     {closure.holding_days}

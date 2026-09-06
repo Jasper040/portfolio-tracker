@@ -225,6 +225,36 @@ export function decimalPercent(value: string | null | undefined): string {
   return `${decimal(shifted, 2, 2)}%`;
 }
 
+/** The shortest holding an annualised return is reported for.
+ *
+ *  Below this the arithmetic stops meaning anything: a 3-day 2% gain annualises
+ *  to roughly 1.000%, which is correct and useless. The backend computes the
+ *  figure for every closure regardless -- design doc Sec 7.1 requires it to be
+ *  carried -- so the decision about when it is worth *showing* is a presentation
+ *  one, and it lives here rather than in the domain layer.
+ *
+ *  Exported because Sec 13 requires a methodology choice to be visible next to
+ *  the number it governs: the Lots screen reads this constant into the note above
+ *  the table, so the threshold on screen cannot drift from the one applied.
+ */
+export const ANNUALISED_MIN_HOLDING_DAYS = 90;
+
+/** An annualised return, or an em dash when the holding was too short to annualise.
+ *
+ *  Two different reasons produce the dash and both are honest: the backend gives
+ *  `null` where the figure is genuinely undefined (a same-day round trip has no
+ *  period; a total loss has no real root), and this adds the case where a figure
+ *  exists but would mislead. Neither renders "0%", which would claim the position
+ *  broke even.
+ */
+export function annualisedPercent(
+  value: string | null | undefined,
+  holdingDays: number,
+): string {
+  if (holdingDays < ANNUALISED_MIN_HOLDING_DAYS) return "—";
+  return decimalPercent(value);
+}
+
 /** Sign test on a decimal string, again without parsing. Used only to pick a
  *  colour, never to compute -- a wrong answer here miscolours a cell, it does
  *  not corrupt a figure. */
