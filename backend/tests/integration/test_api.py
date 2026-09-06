@@ -25,7 +25,7 @@ def test_lists_transactions_newest_first() -> None:
     body = _client().get("/api/transactions", params={"limit": 1000}).json()
     dates = [r["trade_date"] for r in body["items"]]
     assert dates == sorted(dates, reverse=True)
-    assert body["total"] == 13
+    assert body["total"] == 15
 
 
 def test_money_is_serialised_as_a_string_not_a_float() -> None:
@@ -49,7 +49,7 @@ def test_filters_by_isin() -> None:
 def test_paginates() -> None:
     body = _client().get("/api/transactions", params={"limit": 5, "offset": 0}).json()
     assert len(body["items"]) == 5
-    assert body["total"] == 13
+    assert body["total"] == 15
 
 
 def test_paging_covers_every_row_exactly_once() -> None:

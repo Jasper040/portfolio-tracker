@@ -100,7 +100,7 @@ class TestClassification:
 
 class TestParsing:
     def test_reads_every_row_of_the_golden_file(self) -> None:
-        assert len(parse_account_csv(GOLDEN)) == 23
+        assert len(parse_account_csv(GOLDEN)) == 24
 
     def test_keeps_exactly_the_genuine_rows(self) -> None:
         """Asserting the whole multiset, not a count: a count passes just as well
@@ -110,7 +110,7 @@ class TestParsing:
         )
         assert kept == Counter(
             {
-                "CORPORATE_ACTION": 2,
+                "CORPORATE_ACTION": 4,
                 "FX_CONVERT": 2,
                 "INTEREST": 2,
                 "TAX": 1,
@@ -122,8 +122,8 @@ class TestParsing:
                 "FEE": 1,
             }
         )
-        # 23 rows in, 10 dropped as trade duplicates or internal transfers.
-        assert sum(kept.values()) == 13
+        # 24 rows in, 9 dropped as trade duplicates or internal transfers.
+        assert sum(kept.values()) == 15
 
     def test_the_only_genuine_flows_are_one_deposit_and_one_withdrawal(self) -> None:
         """Sec 3.3: the sweep rows carry real amounts and plausible balances. If any
@@ -153,12 +153,12 @@ class TestParsing:
         """Sec 3.4 joins on (date, isin, abs(amount)), so a corporate-action row
         without its ISIN cannot be matched to the trade pair it explains."""
         actions = [r for r in parse_account_csv(GOLDEN) if r.action.txn_type == "CORPORATE_ACTION"]
-        assert len(actions) == 2
+        assert len(actions) == 4
         assert all(r.isin for r in actions)
 
     def test_preserves_every_raw_cell(self) -> None:
         row = parse_account_csv(GOLDEN)[0]
-        assert row.raw["Description"].startswith("SPLIT AANPASSING")
+        assert row.raw["Description"].startswith("PRODUCTWIJZIGING")
         assert set(row.raw) == {
             "Date",
             "Time",
