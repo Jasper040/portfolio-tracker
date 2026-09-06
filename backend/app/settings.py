@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     base_currency: str = "EUR"
     lot_method: str = "FIFO"
     cors_origins: str = "http://localhost:5173"
+    #: Where the operator's corporate-action answers live (design doc Sec 6.3).
+    #: Ledger-adjacent rather than in the database on purpose: it is a hand-written
+    #: record of decisions, so it wants to be readable, diffable and committed.
+    corporate_actions_path: str = "config/corporate_actions.yaml"
 
     @property
     def cors_origin_list(self) -> list[str]:
