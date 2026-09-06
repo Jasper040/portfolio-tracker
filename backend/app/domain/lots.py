@@ -144,6 +144,12 @@ class Closure:
 class MatchResult:
     closures: list[Closure]
     open_lots: list[OpenLot]
+    #: Charges from sales that matched no lot at all -- the buys predate the export
+    #: window, so there is nothing to attribute them to. They are collected rather
+    #: than discarded because `rebuild()` counts them toward the attributed side of
+    #: `Sum(attributed) == Sum(ledger)`; dropped, a single such sale would make
+    #: attributed fall short and refuse every method for the entire ledger.
+    unmatched_charges: Charges = field(default_factory=Charges.zero)
 
     @property
     def quantity(self) -> Decimal:
@@ -268,11 +274,17 @@ def match_lots(transactions: list[LotTransaction], method: LotMethod) -> MatchRe
                 )
             )
 
+    unmatched = Charges.zero()
     for sale, indices in sale_closures:
         if not indices:
-            # A sale that matched nothing still cost what it cost. There is no lot
-            # to carry it, so it stays a portfolio-level cost rather than being
-            # silently dropped -- which would break the standing invariant.
+            # A sale that matched no lot at all -- its buys predate the export
+            # window, or the position was already exhausted -- still cost what it
+            # cost. There is no closure to carry those charges, so they go into
+            # `unmatched_charges` and `rebuild()` counts them toward the attributed
+            # total. Dropping them here would make attributed fall short of the
+            # ledger and refuse every method for the whole ledger, with a message
+            # blaming apportionment.
+            unmatched += sale.charges
             continue
         shares = apportion_charges(sale.charges, [matches[i].quantity for i in indices])
         for index, share in zip(indices, shares, strict=False):
@@ -292,4 +304,6 @@ def match_lots(transactions: list[LotTransaction], method: LotMethod) -> MatchRe
         for i, match in enumerate(matches)
     ]
 
-    return MatchResult(closures=closures, open_lots=open_lots)
+    return MatchResult(
+        closures=closures, open_lots=open_lots, unmatched_charges=unmatched
+    )

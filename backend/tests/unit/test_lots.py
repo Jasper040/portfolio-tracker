@@ -149,6 +149,56 @@ class TestEdges:
         assert result.closures == []
         assert result.cost_basis == D("100.00")
 
+    def test_a_sale_matching_no_lot_keeps_its_charges_rather_than_dropping_them(
+        self,
+    ) -> None:
+        """An instrument whose buys predate the export window.
+
+        Nothing in the ledger opens the position, so the sale closes no lot and
+        there is no closure to carry its charges. They must still be accounted for:
+        `rebuild()` counts `unmatched_charges` toward the attributed side of
+        `Sum(attributed) == Sum(ledger)`, and dropping them would make attributed
+        fall short and refuse every method for the entire ledger -- with a message
+        blaming apportionment, which would not be the cause.
+        """
+        result = match_lots([sell("1", "10", "20", "3.50")], "FIFO")
+        assert result.closures == []
+        assert result.open_lots == []
+        assert result.unmatched_charges.total == D("3.50")
+        assert result.unmatched_charges.commission == D("3.50")
+
+    def test_an_oversale_keeps_the_whole_charge_on_the_part_that_matched(self) -> None:
+        """The other half of the same rule. A sale that matched SOMETHING carries
+        all of its charges on the closures it produced, so nothing is left over --
+        `unmatched_charges` collects only sales that matched nothing at all."""
+        result = match_lots([buy("1", "5", "10"), sell("2", "10", "30", "2.00")], "FIFO")
+        assert result.unmatched_charges.total == D("0")
+        assert sum(c.charges.total for c in result.closures) == D("2.00")
+
+    def test_the_invariant_holds_when_a_sale_matches_nothing(self) -> None:
+        """Sec 11.2 #4 across the union of both channels: attributing a sale with
+        no lot must still add up to what the ledger says was paid."""
+        # The `buy` helper dates its fills in 2020 and `sell` in 2024, so the later
+        # purchase is built here rather than reordering the fixture into an input
+        # `match_lots` would rightly reject as unchronological.
+        later_buy = LotTransaction(
+            id="2",
+            trade_date=date(2024, 1, 2),
+            side="BUY",
+            quantity=D("5"),
+            price=D("10"),
+            charges=Charges(commission=D("1.00")),
+        )
+        transactions = [sell("1", "10", "20", "3.50", day=1), later_buy]
+        result = match_lots(transactions, "FIFO")
+        attributed = (
+            sum((c.charges.total for c in result.closures), D("0"))
+            + sum((lot.charges.total for lot in result.open_lots), D("0"))
+            + result.unmatched_charges.total
+        )
+        assert attributed == sum((t.charges.total for t in transactions), D("0"))
+        assert attributed == D("4.50")
+
     def test_rejects_transactions_out_of_chronological_order(self) -> None:
         # A SELL cannot match a BUY it has not seen. Silently mismatching would
         # produce a plausible, wrong cost basis.

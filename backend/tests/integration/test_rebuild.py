@@ -8,9 +8,12 @@ determinism tests here are not decoration: they are the property.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Sequence
 from dataclasses import replace
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import Engine
@@ -20,7 +23,7 @@ from app.analytics.rebuild import ChargeMismatch, rebuild
 from app.db import create_engine_and_tables
 from app.domain.charges import Charges
 from app.ingest.importer import ensure_default_account, import_degiro_export
-from app.models.ledger import Lot, LotClosure
+from app.models.ledger import Account, ImportBatch, Lot, LotClosure, Transaction
 
 GOLDEN = Path(__file__).parents[1] / "golden"
 
@@ -53,6 +56,70 @@ def loaded(tmp_path: Path) -> Engine:
 
     engine = _engine()
     import_degiro_export(engine, export, ensure_default_account(engine), answers)
+    return engine
+
+
+SYNTHETIC_ISIN = "NL0000000009"
+
+#: `(source_ref, trade_date, quantity, value_base, fee_base)`. A positive quantity
+#: is a purchase and a negative one a sale, which is the export's own convention;
+#: `value_base` is DeGiro's "Value EUR" for the movement and `fee_base` is a debit,
+#: so it is negative.
+SyntheticFill = tuple[str, str, str, str, str]
+
+
+def _synthetic_ledger(fills: Sequence[SyntheticFill]) -> Engine:
+    """An engine holding exactly `fills`, inserted straight into the session.
+
+    Written in code rather than as another golden CSV deliberately: the golden
+    files' row counts are asserted in a dozen places by M0's suite, so a fixture
+    that can only be extended by moving those is a fixture nobody extends. The
+    style follows `tests/unit/test_models.py`, which already builds an Account, an
+    ImportBatch and Transaction rows by hand.
+    """
+    engine = _engine()
+    account_id = uuid4()
+    batch_id = uuid4()
+    with Session(engine) as session:
+        session.add(
+            Account(
+                id=account_id, broker="degiro", name="Synthetic", base_currency="EUR"
+            )
+        )
+        session.add(
+            ImportBatch(
+                id=batch_id,
+                source="degiro",
+                filename="synthetic",
+                file_sha256="synthetic",
+                parser_version="1",
+                imported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                row_count=len(fills),
+                inserted_count=len(fills),
+            )
+        )
+        for ref, day, quantity, value, fee in fills:
+            session.add(
+                Transaction(
+                    id=uuid4(),
+                    account_id=account_id,
+                    import_batch_id=batch_id,
+                    source="degiro",
+                    source_ref=ref,
+                    txn_type="SELL" if quantity.startswith("-") else "BUY",
+                    trade_date=date.fromisoformat(day),
+                    isin=SYNTHETIC_ISIN,
+                    quantity=D(quantity),
+                    value_base=D(value),
+                    fee_base=D(fee),
+                    tax_base=D("0.00"),
+                    net_base=D(value) + D(fee),
+                    is_economic=True,
+                    closure_reason="DECISION",
+                    raw_json="{}",
+                )
+            )
+        session.commit()
     return engine
 
 
@@ -175,6 +242,40 @@ class TestDeterminism:
         with Session(loaded) as session:
             methods = {lot.method for lot in session.exec(select(Lot)).all()}
         assert methods == {"FIFO", "LIFO", "HIFO"}
+
+
+class TestASaleWithNoMatchingBuy:
+    """An instrument whose purchases predate the export window.
+
+    The sale closes no lot, so no closure exists to carry its charges. Before
+    `MatchResult.unmatched_charges` they were silently discarded: `attributed` fell
+    short of the ledger and `rebuild()` refused EVERY method for the WHOLE ledger,
+    with a message blaming apportionment. One such instrument would have bricked
+    the application, and neither dataset happens to contain one.
+    """
+
+    FILLS: tuple[SyntheticFill, ...] = (
+        ("syn-orphan-sell", "2024-04-01", "-10", "400.00", "-1.50"),
+        ("syn-later-buy", "2024-05-01", "4", "-80.00", "-0.50"),
+    )
+
+    def test_the_rebuild_completes_rather_than_refusing(self) -> None:
+        result = rebuild(_synthetic_ledger(self.FILLS), "FIFO")
+        assert result.closures == 0
+        assert result.lots == 1
+        assert result.charges_attributed == result.charges_in_ledger
+        assert result.charges_in_ledger == D("2.00")
+
+    def test_the_orphaned_sales_charges_reach_the_attributed_side(self) -> None:
+        """1.50 of the 2.00 belongs to no lot and no closure. It is counted through
+        `unmatched_charges`; without that channel `attributed` would come to 0.50
+        against a ledger of 2.00 and the rebuild would refuse."""
+        engine = _synthetic_ledger(self.FILLS)
+        result = rebuild(engine, "FIFO")
+        with Session(engine) as session:
+            lots = session.exec(select(Lot)).all()
+        assert sum((lot.commission for lot in lots), D("0")) == D("0.50")
+        assert result.charges_attributed == D("2.00")
 
 
 class TestSuppression:

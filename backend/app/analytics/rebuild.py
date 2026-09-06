@@ -83,6 +83,12 @@ def rebuild(engine: Engine, method: LotMethod) -> RebuildResult:
         )
         result = match_lots(adjusted, method)
 
+        # A sale whose buys predate the export window matches no lot, so no closure
+        # carries its charges. They still left the account, and both sides of
+        # `Sum(attributed) == Sum(ledger)` have to see them or a single such sale
+        # would refuse the rebuild for every instrument at once.
+        attributed += result.unmatched_charges.total
+
         for open_lot in result.open_lots:
             attributed += open_lot.charges.total
             lots.append(
