@@ -1,0 +1,60 @@
+/* Global styles. Everything else in the app is inline-styled, matching the
+   design; only the things inline styles cannot express live here: element
+   defaults, pseudo-elements and scrollbar chrome.
+
+   The dark ground is set on <html> as well as <body> so an overscroll bounce
+   does not flash white above the header. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #0b0c0e;
+}
+
+body {
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  color: #e8eaed;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: #4c8df6;
+  text-decoration: none;
+}
+
+a:hover {
+  color: #7fb0ff;
+  text-decoration: underline;
+}
+
+::selection {
+  background: #4c8df640;
+}
+
+/* Keyboard focus must stay visible: `all: unset` on every button in this app
+   also strips the user-agent focus ring, which would otherwise make the whole
+   interface unnavigable without a mouse. */
+:focus-visible {
+  outline: 2px solid #4c8df6;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #23272e;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0b0c0e;
+}

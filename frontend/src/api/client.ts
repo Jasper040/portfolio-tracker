@@ -4,8 +4,22 @@ import type { TransactionPage } from "./types";
 // working out of the box while still being deployable against a different backend.
 const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
-export async function fetchTransactions(limit = 500, offset = 0): Promise<TransactionPage> {
-  const response = await fetch(`${BASE}/api/transactions?limit=${limit}&offset=${offset}`);
+export interface TransactionQuery {
+  limit?: number;
+  offset?: number;
+  /** Server-side filter. The backend indexes `isin`, so filtering there rather
+   *  than in the browser keeps the page count honest -- a client-side filter
+   *  would narrow the rows on screen while `total` still counted every row. */
+  isin?: string;
+}
+
+export async function fetchTransactions(query: TransactionQuery = {}): Promise<TransactionPage> {
+  const { limit = 500, offset = 0, isin } = query;
+
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (isin) params.set("isin", isin);
+
+  const response = await fetch(`${BASE}/api/transactions?${params}`);
   if (!response.ok) {
     throw new Error(`Failed to load transactions: ${response.status} ${response.statusText}`);
   }
