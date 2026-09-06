@@ -278,6 +278,70 @@ class TestASaleWithNoMatchingBuy:
         assert result.charges_attributed == D("2.00")
 
 
+class TestMethodDivergenceSurvivesThePipeline:
+    """Sec 7.1's premise, end to end rather than at the matcher.
+
+    `tests/unit/test_lots.py` proves the three algorithms disagree and
+    `test_lots_api.py` proves each method is served from its own stored rows.
+    Neither proves the disagreement SURVIVES `to_lot_transactions` ->
+    `apply_splits` -> `rebuild`, and both real datasets are blind to it: the golden
+    fixture gives every instrument exactly one buy lot and the owner's export closes
+    each position in full, so all three methods produce identical closures on both.
+    A regrouping bug that collapsed multi-lot structure would pass everything else
+    in this suite.
+    """
+
+    #: Three purchases and one sale of one instrument. Three lots, not two: HIFO
+    #: picks the dearest, which with only two lots is necessarily also the oldest or
+    #: the newest, so two methods would tie however the prices were chosen. Here the
+    #: dearest lot (30) is the middle one, so FIFO, LIFO and HIFO each pick a
+    #: different lot and the sale can consume exactly one of them.
+    FILLS: tuple[SyntheticFill, ...] = (
+        ("syn-buy-at-20", "2024-01-01", "10", "-200.00", "-1.00"),
+        ("syn-buy-at-30", "2024-02-01", "10", "-300.00", "-1.00"),
+        ("syn-buy-at-10", "2024-03-01", "10", "-100.00", "-1.00"),
+        ("syn-sell-at-40", "2024-04-01", "-10", "400.00", "-1.00"),
+    )
+
+    def test_the_three_methods_realise_three_different_totals(self) -> None:
+        engine = _synthetic_ledger(self.FILLS)
+        realised: dict[str, Decimal] = {}
+        for method in ("FIFO", "LIFO", "HIFO"):
+            result = rebuild(engine, method)  # type: ignore[arg-type]
+            assert result.charges_attributed == result.charges_in_ledger
+            with Session(engine) as session:
+                closures = session.exec(
+                    select(LotClosure).where(LotClosure.method == method)
+                ).all()
+            assert len(closures) == 1
+            realised[method] = sum((c.pnl for c in closures), D("0"))
+
+        # Gross 200 / 300 / 100 on the 20, 10 and 30 lots respectively, each less
+        # the 2.00 the round trip cost: 1.00 from the buy leg (the lot is fully
+        # consumed, so it keeps none of it) and the sale's whole 1.00.
+        assert realised["FIFO"] == D("198.00")
+        assert realised["LIFO"] == D("298.00")
+        assert realised["HIFO"] == D("98.00")
+        assert len(set(realised.values())) == 3
+
+    def test_each_method_leaves_a_different_pair_of_lots_open(self) -> None:
+        """The other half of the same fact: the method decides which basis was
+        consumed, so the basis left behind differs too -- while the quantity, which
+        the method must never change, does not."""
+        engine = _synthetic_ledger(self.FILLS)
+        remaining: dict[str, Decimal] = {}
+        for method in ("FIFO", "LIFO", "HIFO"):
+            rebuild(engine, method)  # type: ignore[arg-type]
+            with Session(engine) as session:
+                lots = session.exec(select(Lot).where(Lot.method == method)).all()
+            assert sum((lot.quantity for lot in lots), D("0")) == D("20")
+            remaining[method] = sum((lot.cost_basis for lot in lots), D("0"))
+
+        assert remaining["FIFO"] == D("400.00")  # the 30 and 10 lots remain
+        assert remaining["LIFO"] == D("500.00")  # the 20 and 30 lots remain
+        assert remaining["HIFO"] == D("300.00")  # the 20 and 10 lots remain
+
+
 class TestSuppression:
     def test_the_split_legs_never_become_lots(self, loaded: Engine) -> None:
         """The golden split pair is NL0000000003. Its legs are non-economic, so
