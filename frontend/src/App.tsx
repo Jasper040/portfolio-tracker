@@ -42,13 +42,6 @@ export default function App() {
   // matching itself, so switching back to a method already seen is free.
   const agg = useMemo(() => aggregate(data, method), [data, method]);
 
-  // Stable palette index per instrument, so a holding keeps its colour across
-  // every screen rather than being recoloured by whatever sort order it lands in.
-  const instrumentIndex = useMemo(
-    () => new Map(data.instruments.map((inst, i) => [inst.isin, i])),
-    [data],
-  );
-
   const def = tabDef(tab);
   const isLive = LEDGER_BACKED.has(tab);
 
@@ -93,6 +86,14 @@ export default function App() {
                 Prices, dividends and benchmarks are computed from a modelled dataset.{" "}
                 <button
                   type="button"
+                  onClick={() => setTab("pos")}
+                  style={{ all: "unset", cursor: "pointer", color: c.accent }}
+                >
+                  Positions
+                </button>
+                ,{" "}
+                <button
+                  type="button"
                   onClick={() => setTab("tx")}
                   style={{ all: "unset", cursor: "pointer", color: c.accent }}
                 >
@@ -114,14 +115,7 @@ export default function App() {
           {tab === "dash" && (
             <Dashboard data={data} agg={agg} method={method} onOpenWhatIf={() => setTab("whatif")} />
           )}
-          {tab === "pos" && (
-            <Positions
-              agg={agg}
-              method={method}
-              instrumentIndex={instrumentIndex}
-              onOpenInstrument={openInstrument}
-            />
-          )}
+          {tab === "pos" && <Positions method={method} onOpenInstrument={openInstrument} />}
           {tab === "tx" && <Transactions />}
           {tab === "lots" && <Lots method={method} />}
           {tab === "detail" && (

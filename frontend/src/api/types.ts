@@ -92,6 +92,64 @@ export interface Closure {
   annualised_return: string | null;
 }
 
+/** One day of the net portfolio value: holdings at market plus cash, so a debit
+ *  balance reduces it. `value_base` and `holdings_base` are `null` -- never "0"
+ *  -- when a held instrument could not be priced (design doc 8.1). */
+export interface ValuationPoint {
+  date: string;
+  holdings_base: string | null;
+  cash_base: string;
+  value_base: string | null;
+  coverage: Coverage;
+  /** The share of the day's holdings value that is fresh or hand-supplied.
+   *  `null` exactly when coverage is "missing": there is no total, so there is
+   *  no denominator. */
+  covered_pct: string | null;
+}
+
+export interface ValuationSeries extends Provenance {
+  items: ValuationPoint[];
+  start: string | null;
+  end: string | null;
+  /** Echoed back with `clamped`, so a window longer than the ledger can say it
+   *  was shortened rather than silently drawing a shorter chart. */
+  requested_from: string | null;
+  clamped: boolean;
+  base_currency: string;
+}
+
+/** Named `LivePosition` rather than `Position` because `portfolio/aggregate.ts`
+ *  already exports a `PositionRow` from the modelled dataset, and a screen that
+ *  imported the wrong one would compile and be wrong. */
+export interface LivePosition {
+  isin: string;
+  product_name: string;
+  currency: string;
+  quantity: string;
+  cost_basis: string;
+  charges_base: string;
+  price: string | null;
+  price_date: string | null;
+  /** Which provider answered. "manual" belongs beside a figure somebody typed. */
+  source: string | null;
+  market_value_base: string | null;
+  /** Gross, charges and net kept apart all the way to the screen (design doc 6.4). */
+  gross_unrealised_base: string | null;
+  unrealised_base: string | null;
+  unrealised_pct: string | null;
+  coverage: Coverage;
+}
+
+export interface PositionsPage extends Provenance {
+  items: LivePosition[];
+  as_of: string | null;
+  total_cost_basis: string;
+  /** `null` when ANY position is unpriceable. Render "—", never a partial sum. */
+  total_market_value_base: string | null;
+  total_unrealised_base: string | null;
+  base_currency: string;
+}
+
 export interface ClosurePage extends Provenance {
   items: Closure[];
   total: number;

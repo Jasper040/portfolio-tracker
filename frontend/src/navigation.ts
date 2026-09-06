@@ -64,4 +64,4 @@ export function tabDef(id: TabId): TabDef {
 
 /** The screens currently backed by a real endpoint. Everything else renders
  *  from `portfolio/provider.ts` and is badged MODELLED. */
-export const LEDGER_BACKED: ReadonlySet<TabId> = new Set<TabId>(["tx", "lots"]);
+export const LEDGER_BACKED: ReadonlySet<TabId> = new Set<TabId>(["pos", "tx", "lots"]);
