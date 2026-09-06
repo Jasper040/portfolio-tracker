@@ -14,11 +14,25 @@ guards against is a cent lost in apportionment, which no reader would ever spot.
 
 All arithmetic lives in `domain/`. This module reads rows, calls three pure passes
 and writes the answers.
+
+M2 adds two more derived tables, `position_daily` and `cash_daily`, and
+deliberately adds no third. There is no `valuation_daily`: valuation depends on a
+fetched price, and a table that did would make this function's answer depend on
+when it ran. Everything written here stays a pure function of the ledger, which
+is the entire reason the price cache lives on the other side of the line and is
+never touched from this module (M2 spec section 4).
+
+`through` is why that still holds with a daily series in it. The ledger says when
+you last traded, not when you last held, so the series needs an end date the
+ledger cannot supply -- and taking it as a parameter, defaulting to the last
+trade date, keeps `rebuild(engine, method)` a function of its inputs while
+letting the CLI ask for "up to today".
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
@@ -27,8 +41,9 @@ from sqlmodel import Session, select
 
 from app.domain.lots import LotMethod, match_lots
 from app.domain.orders import charges_of, is_share_movement, to_lot_transactions
+from app.domain.positions import daily_series
 from app.domain.splits import apply_splits, derive_splits
-from app.models.ledger import Lot, LotClosure, Transaction
+from app.models.ledger import CashDaily, Lot, LotClosure, PositionDaily, Transaction
 
 _ZERO = Decimal("0.00")
 
@@ -44,6 +59,8 @@ class RebuildResult:
     closures: int
     charges_attributed: Decimal
     charges_in_ledger: Decimal
+    position_days: int
+    cash_days: int
 
 
 def _ledger_charges(rows: list[Transaction]) -> Decimal:
@@ -65,10 +82,20 @@ def _ledger_charges(rows: list[Transaction]) -> Decimal:
     return total
 
 
-def rebuild(engine: Engine, method: LotMethod) -> RebuildResult:
-    """Recompute `lot` and `lot_closure` for one method, replacing what is there."""
+def rebuild(
+    engine: Engine, method: LotMethod, *, through: date | None = None
+) -> RebuildResult:
+    """Recompute the derived tables for one method, replacing what is there.
+
+    `through` is the last day of the daily series. `None` means the ledger's own
+    last trade date, which keeps this deterministic; the CLI passes today's date
+    so a position held since the last trade keeps appearing on the chart.
+    """
     with Session(engine) as session:
         rows = list(session.exec(select(Transaction)).all())
+
+    window_end = through or max((row.trade_date for row in rows), default=date.min)
+    series = daily_series(rows, through=window_end)
 
     splits = derive_splits(rows)
     fills_by_isin = to_lot_transactions(rows)
@@ -151,6 +178,29 @@ def rebuild(engine: Engine, method: LotMethod) -> RebuildResult:
             session.add(lot)
         for closure_row in closures:
             session.add(closure_row)
+
+        for stale_position in session.exec(select(PositionDaily)).all():
+            session.delete(stale_position)
+        for stale_cash in session.exec(select(CashDaily)).all():
+            session.delete(stale_cash)
+        session.flush()
+        for point in series.positions:
+            session.add(
+                PositionDaily(
+                    id=uuid4(),
+                    position_date=point.on,
+                    isin=point.isin,
+                    quantity=point.quantity,
+                )
+            )
+        for cash_point in series.cash:
+            session.add(
+                CashDaily(
+                    id=uuid4(),
+                    cash_date=cash_point.on,
+                    balance_base=cash_point.balance_base,
+                )
+            )
         session.commit()
 
     return RebuildResult(
@@ -159,4 +209,6 @@ def rebuild(engine: Engine, method: LotMethod) -> RebuildResult:
         closures=len(closures),
         charges_attributed=attributed,
         charges_in_ledger=in_ledger,
+        position_days=len(series.positions),
+        cash_days=len(series.cash),
     )

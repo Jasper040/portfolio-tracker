@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -202,11 +202,23 @@ def rebuild_command(
     method: Annotated[
         str, typer.Option("--method", help="FIFO, LIFO or HIFO. Defaults to the configured one.")
     ] = "",
+    through: Annotated[
+        str,
+        typer.Option(
+            "--through",
+            help="Last day of the daily position and cash series. Defaults to today.",
+        ),
+    ] = "",
 ) -> None:
-    """Recompute lots and closures from the ledger (design doc Sec 11.2).
+    """Recompute the derived tables from the ledger (design doc Sec 11.2).
 
-    Derived tables only -- the ledger is untouched. Exits non-zero if attributed
-    charges do not equal the ledger's, having written nothing.
+    Derived tables only -- the ledger and the price cache are both untouched.
+    Exits non-zero if attributed charges do not equal the ledger's, having
+    written nothing.
+
+    The daily series runs to `--through`, defaulting to today rather than to the
+    last trade: a position held since the last trade is still held, and a chart
+    that stopped there would say otherwise.
     """
     settings = get_settings()
     chosen = (method or settings.lot_method).upper()
@@ -214,9 +226,15 @@ def rebuild_command(
         typer.echo(f"unknown method {chosen!r}; expected one of {list(LOT_METHODS)}", err=True)
         raise typer.Exit(code=2)
 
+    try:
+        window_end = date.fromisoformat(through) if through else date.today()
+    except ValueError as bad:
+        typer.echo(f"--through {through!r} is not YYYY-MM-DD", err=True)
+        raise typer.Exit(code=2) from bad
+
     engine = create_engine_and_tables(settings.database_url)
     try:
-        result = rebuild(engine, chosen)
+        result = rebuild(engine, chosen, through=window_end)
     except ChargeMismatch as mismatch:
         typer.echo(str(mismatch), err=True)
         raise typer.Exit(code=1) from mismatch
@@ -224,6 +242,10 @@ def rebuild_command(
     typer.echo(
         f"{result.method}: {result.lots} open lots, {result.closures} closures, "
         f"charges {result.charges_attributed} == ledger {result.charges_in_ledger}"
+    )
+    typer.echo(
+        f"daily series: {result.position_days} position rows, "
+        f"{result.cash_days} cash days through {window_end.isoformat()}"
     )
 
 
