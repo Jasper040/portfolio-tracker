@@ -13,8 +13,11 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from app.ingest.base import NormalisedRow
 from app.ingest.corporate_actions import (
+    MalformedResolutions,
     Resolution,
     detect,
     load_resolutions,
@@ -125,6 +128,37 @@ class TestDetection:
         ]
         assert detect(rows, []) == ()
 
+    def test_does_not_sweep_a_third_row_into_a_pair(self) -> None:
+        """The legs are matched to each other, not merely totalled.
+
+        A group that is accepted whenever it sums to zero will absorb any extra
+        row that does not change the total -- and if the operator then resolves
+        the candidate as a corporate action, that extra row is marked
+        non-economic too. A genuine transaction would leave the economic ledger
+        with no error and nothing to notice.
+        """
+        rows = [
+            _row("a", day=20, isin="NL0000000009", quantity="-1", local="910.40"),
+            _row("b", day=20, isin="NL0000000009", quantity="10", local="-910.40"),
+            _row("c", day=20, isin="NL0000000009", quantity="3", local="0.00"),
+        ]
+        found = detect(rows, [])
+        assert len(found) == 1
+        assert set(found[0].source_refs) == {"a", "b"}
+
+    def test_pairs_two_events_on_one_day_separately(self) -> None:
+        """Four legs, two amounts: two events, not one four-legged one. Sharing a
+        key would let one answer resolve an event nobody looked at."""
+        rows = [
+            _row("a", day=20, isin="NL0000000009", quantity="-1", local="100.00"),
+            _row("b", day=20, isin="NL0000000009", quantity="10", local="-100.00"),
+            _row("c", day=20, isin="NL0000000009", quantity="-2", local="250.00"),
+            _row("d", day=20, isin="NL0000000009", quantity="20", local="-250.00"),
+        ]
+        found = detect(rows, [])
+        assert {c.local_amount for c in found} == {D("100.00"), D("250.00")}
+        assert [set(c.source_refs) for c in found] == [{"a", "b"}, {"c", "d"}]
+
 
 class TestResolutions:
     YAML = """\
@@ -168,3 +202,63 @@ resolutions:
         found = detect(*_golden())
         loaded = {c.key: Resolution(c.key, "trade") for c in found}
         assert suppressed_refs(found, loaded) == frozenset()
+
+
+class TestMalformedResolutions:
+    """A resolutions file that is wrong must raise, not resolve.
+
+    The whole point of the quarantine is that a corporate action cannot pass
+    unnoticed. A file this loader accepts but misreads is worse than no file at
+    all: the import succeeds, the operator believes the question was answered the
+    way they wrote it, and nothing anywhere says otherwise.
+    """
+
+    def _load(self, tmp_path: Path, body: str) -> dict[str, Resolution]:
+        path = tmp_path / "corporate_actions.yaml"
+        path.write_text(body, encoding="utf-8")
+        return load_resolutions(path)
+
+    def test_a_missing_treatment_is_rejected_not_assumed(self, tmp_path: Path) -> None:
+        """Defaulting it silently turns an unanswered question into 'suppress'."""
+        with pytest.raises(MalformedResolutions, match="treatment"):
+            self._load(tmp_path, f"resolutions:\n  - key: {SPLIT_KEY}\n")
+
+    def test_a_misspelled_field_is_rejected(self, tmp_path: Path) -> None:
+        """The failure this protects against, exactly.
+
+        An operator decides a quarantined pair was a genuine round trip and writes
+        `treatement: trade`. Ignoring the unknown field and defaulting the real one
+        suppresses two real trade legs -- an import that succeeds and is wrong.
+        """
+        body = f"resolutions:\n  - key: {SPLIT_KEY}\n    treatement: trade\n"
+        with pytest.raises(MalformedResolutions, match="treatement"):
+            self._load(tmp_path, body)
+
+    def test_a_duplicate_key_is_rejected(self, tmp_path: Path) -> None:
+        """Two answers to one question. Taking the last one silently discards a
+        decision the operator made and can still see in the file."""
+        body = (
+            f"resolutions:\n"
+            f"  - key: {SPLIT_KEY}\n    treatment: trade\n"
+            f"  - key: {SPLIT_KEY}\n    treatment: corporate_action\n"
+        )
+        with pytest.raises(MalformedResolutions, match="twice"):
+            self._load(tmp_path, body)
+
+    def test_an_empty_key_is_rejected(self, tmp_path: Path) -> None:
+        """`key:` with nothing after it parses as None and coerces to "None",
+        which matches no event -- an answer that silently does nothing."""
+        with pytest.raises(MalformedResolutions, match="key"):
+            self._load(tmp_path, "resolutions:\n  - key:\n    treatment: trade\n")
+
+    def test_an_unparseable_file_names_itself(self, tmp_path: Path) -> None:
+        """A YAML syntax error must reach the operator as a sentence about their
+        file, not as a library traceback out of the import command."""
+        with pytest.raises(MalformedResolutions, match="corporate_actions.yaml"):
+            self._load(tmp_path, "resolutions: [unclosed\n")
+
+    def test_a_valid_file_still_loads(self, tmp_path: Path) -> None:
+        """The guard rejects malformed input without narrowing what is accepted:
+        `note` stays optional."""
+        body = f"resolutions:\n  - key: {SPLIT_KEY}\n    treatment: trade\n"
+        assert self._load(tmp_path, body) == {SPLIT_KEY: Resolution(SPLIT_KEY, "trade", "")}

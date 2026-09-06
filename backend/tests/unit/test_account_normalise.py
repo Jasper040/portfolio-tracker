@@ -29,9 +29,9 @@ def _rows() -> list:
 
 class TestSelection:
     def test_keeps_only_the_genuine_rows(self) -> None:
-        """The nine dropped rows are trade duplicates and internal transfers. A
+        """The seven dropped rows are trade duplicates and internal transfers. A
         cash sweep booked as a deposit makes MWR meaningless (Sec 3.3)."""
-        assert len(_rows()) == 15
+        assert len(_rows()) == 17
 
     def test_drops_the_trade_duplicates_that_transactions_csv_owns(self) -> None:
         assert not [row for row in _rows() if row.txn_type == "TRADE"]

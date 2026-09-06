@@ -5,13 +5,18 @@ everything else (design doc Sec 6.2). It is also the only place corporate action
 are named (Sec 3.4) and the only place the genuine deposits and withdrawals can be
 told apart from internal transfers (Sec 3.3).
 
-That last point is why this is the highest-risk parser in the project. 256 of 785
+That last point is why this is the highest-risk parser in the project. 254 of 785
 rows look exactly like external cash flows and are not: DeGiro's own sweep between
-the investment account and the flatex bank account, iDEAL reservation pairs, and an
-offsetting flatex withdrawal pair. They carry real signed euro amounts and plausible
-running balances, so nothing in the numbers distinguishes them -- only the
-description does. Book them as deposits and MWR becomes meaningless while TWR's
-sub-period boundaries fragment into noise.
+the investment account and the flatex bank account, and iDEAL reservation pairs.
+They carry real signed euro amounts and plausible running balances, so nothing in
+the numbers distinguishes them -- only the description does. Book them as deposits
+and MWR becomes meaningless while TWR's sub-period boundaries fragment into noise.
+
+The mirror-image error is just as costly and was live until the Sec 3.6 cash
+invariant caught it: the three flatex transfer rows LOOK like another internal pair
+and are not, netting EUR -8000.00 of real movement. Dropping a group because it
+appears to offset is only safe when it actually does, so those are kept and typed
+by the sign of the amount.
 
 Classification is therefore prefix-based on free text, which brings its own trap:
 `Dividendbelasting` starts with `Dividend`. Rules are ordered most-specific-first
@@ -23,7 +28,7 @@ from __future__ import annotations
 
 import csv
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -65,9 +70,22 @@ class AccountAction:
     #: (Sec 6.4: `Aansluitingskosten` is never attributed to a position).
     portfolio_level: bool = False
     note: str = ""
+    #: The description does not say which way the money went, so the sign does.
+    #: `classify` resolves this to DEPOSIT or WITHDRAWAL and it is never True on a
+    #: returned action -- an unresolved one reaching the ledger would carry
+    #: `txn_type=None`, which is the shape of a dropped row.
+    sign_typed: bool = False
 
 
 _DROP = "dropped"
+
+#: DeGiro's wording for the two corporate actions it names. Defined here, where
+#: classification owns the vocabulary, and imported by `corporate_actions` rather
+#: than restated there: both docstrings warn that DeGiro has changed a wording
+#: once already, and a change applied to one copy would leave the other matching
+#: nothing while still looking correct.
+SPLIT_PREFIX = "split aanpassing"
+PRODUCT_CHANGE_PREFIX = "productwijziging"
 
 #: Ordered rules, matched by case-insensitive prefix. ORDER IS LOAD-BEARING:
 #: `Dividendbelasting` must be tested before `Dividend`, or 38 withholding rows book
@@ -94,8 +112,20 @@ _RULES: tuple[tuple[str, AccountAction], ...] = (
     ("overboeking naar uw geldrekening", AccountAction(False, None, True, note=_DROP)),
     ("overboeking van uw geldrekening", AccountAction(False, None, True, note=_DROP)),
     ("reservation ideal", AccountAction(False, None, True, note=_DROP)),
-    ("processed flatex withdrawal", AccountAction(False, None, True, note=_DROP)),
-    ("flatex terugstorting", AccountAction(False, None, True, note=_DROP)),
+    # --- Movements between the account and the owner's own bank. NOT internal.
+    #     The combined EUR cash line covers the DeGiro cash account and the flatex
+    #     bank account as one pot (Sec 3.6), and these cross its boundary: the real
+    #     export nets EUR -8000.00 across the three of them, and the cash invariant
+    #     only reconciles to the broker's stated balance when they are counted.
+    #     Sec 3.2 lists them as a dropped "offsetting internal pair" of 2 rows; the
+    #     file holds 3 and they do not offset. The invariant settles it.
+    #
+    #     Kept by sign rather than by pairing them off. Two of the three DO happen
+    #     to offset in this export, and dropping a group because it nets to zero
+    #     works right up until an export arrives where it does not -- which is
+    #     exactly how the published 2-row pair became 3 rows in the first place.
+    ("processed flatex withdrawal", AccountAction(True, None, True, sign_typed=True)),
+    ("flatex terugstorting", AccountAction(True, None, True, sign_typed=True)),
     # --- The only genuine external flows in the whole export.
     ("ideal deposit", AccountAction(True, "DEPOSIT", True)),
     ("sepa instant terugstorting", AccountAction(True, "WITHDRAWAL", True)),
@@ -106,20 +136,41 @@ _RULES: tuple[tuple[str, AccountAction], ...] = (
     ("rente", AccountAction(True, "INTEREST", True)),
     ("inkomsten uit securities lending", AccountAction(True, "SECURITIES_LENDING", True)),
     # --- Corporate actions. The only place they are named (Sec 3.4).
-    ("split aanpassing", AccountAction(True, "CORPORATE_ACTION", True)),
-    ("productwijziging", AccountAction(True, "CORPORATE_ACTION", True)),
+    (SPLIT_PREFIX, AccountAction(True, "CORPORATE_ACTION", True)),
+    (PRODUCT_CHANGE_PREFIX, AccountAction(True, "CORPORATE_ACTION", True)),
 )
 
 _UNRECOGNISED = AccountAction(keep=False, txn_type=None, recognised=False, note="unrecognised")
 
 
-def classify(description: str) -> AccountAction:
-    """Decide what a description means. Never guesses."""
+def classify(description: str, change: Decimal | None) -> AccountAction:
+    """Decide what a description means. Never guesses.
+
+    `change` is required rather than optional because the rules that need it need
+    it absolutely: for a flatex transfer the description says money moved and the
+    sign is the only thing that says which way. Defaulting it would pick a
+    direction, and picking a direction wrong turns a withdrawal into a deposit --
+    the same class of error as the Sec 3.3 sweep trap this parser exists to avoid.
+    """
     text = description.strip().casefold()
     for prefix, action in _RULES:
         if text.startswith(prefix):
-            return action
+            return _resolve_sign(action, change) if action.sign_typed else action
     return _UNRECOGNISED
+
+
+def _resolve_sign(action: AccountAction, change: Decimal | None) -> AccountAction:
+    """Turn a direction-less rule into a concrete flow using the amount's sign.
+
+    A zero or absent change is neither: it is reported unrecognised rather than
+    booked as a withdrawal of nothing, because a row that reached a sign-typed
+    rule without an amount is a shape this parser has not been taught.
+    """
+    if change is None or change == 0:
+        return replace(_UNRECOGNISED, note="sign-typed rule with no amount")
+    return replace(
+        action, txn_type="DEPOSIT" if change > 0 else "WITHDRAWAL", sign_typed=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +240,7 @@ def parse_account_csv(path: Path) -> list[AccountRow]:
                     balance=parse_optional_decimal(row[AcctCol.BALANCE]),
                     balance_currency=_blank_to_none(row[AcctCol.BALANCE_CCY]),
                     order_ref=_blank_to_none(row[AcctCol.ORDER_ID]),
-                    action=classify(description),
+                    action=classify(description, parse_optional_decimal(row[AcctCol.CHANGE])),
                     raw=dict(zip(ACCOUNT_RAW_FIELDS, row, strict=True)),
                 )
             )

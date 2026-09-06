@@ -39,7 +39,11 @@ from pathlib import Path
 import yaml
 
 from app.ingest.base import NormalisedRow
-from app.ingest.degiro.account_csv import AccountRow
+from app.ingest.degiro.account_csv import (
+    PRODUCT_CHANGE_PREFIX,
+    SPLIT_PREFIX,
+    AccountRow,
+)
 
 #: What `Account.csv` called the event.
 SPLIT = "SPLIT"
@@ -48,9 +52,11 @@ PRODUCT_CHANGE = "PRODUCT_CHANGE"
 #: the case Sec 3.4 keeps the heuristic around for, and it needs a human answer.
 UNLABELLED = "UNLABELLED"
 
+#: Imported rather than restated -- one copy of DeGiro's wording, in the module
+#: that classifies it. See the note beside them in `account_csv`.
 _LABEL_PREFIXES: tuple[tuple[str, str], ...] = (
-    ("split aanpassing", SPLIT),
-    ("productwijziging", PRODUCT_CHANGE),
+    (SPLIT_PREFIX, SPLIT),
+    (PRODUCT_CHANGE_PREFIX, PRODUCT_CHANGE),
 )
 
 #: How a resolution says a candidate should be treated.
@@ -59,6 +65,10 @@ TRADE = "trade"
 _TREATMENTS = frozenset({CORPORATE_ACTION, TRADE})
 
 _ACCOUNT_TYPE = "CORPORATE_ACTION"
+
+
+class MalformedResolutions(ValueError):
+    """The answers file exists but cannot be trusted. Names the file and the entry."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,25 +150,66 @@ def detect(
     labels = _labels(account)
     found: list[CorporateAction] = []
     for (trade_date, isin), rows in groups.items():
-        values = [row.gross_local for row in rows if row.gross_local is not None]
-        # One leg is not a pair, and legs that leave cash behind are a trade: a
-        # corporate action moves shares, so its two legs cancel to the cent.
-        if len(values) < 2 or sum(values) != 0:
-            continue
-        amount = sum((value for value in values if value > 0), Decimal("0.00"))
-        description = labels.get((trade_date, isin, amount), "")
-        found.append(
-            CorporateAction(
-                key=event_key(isin, trade_date, amount),
-                trade_date=trade_date,
-                isin=isin,
-                local_amount=amount,
-                kind=_kind_of(description),
-                label=description,
-                source_refs=tuple(row.source_ref for row in rows),
+        for amount, legs in _matched_legs(rows):
+            description = labels.get((trade_date, isin, amount), "")
+            found.append(
+                CorporateAction(
+                    key=event_key(isin, trade_date, amount),
+                    trade_date=trade_date,
+                    isin=isin,
+                    local_amount=amount,
+                    kind=_kind_of(description),
+                    label=description,
+                    source_refs=tuple(leg.source_ref for leg in legs),
+                )
             )
+    return tuple(
+        sorted(
+            found,
+            key=lambda candidate: (candidate.trade_date, candidate.isin, candidate.local_amount),
         )
-    return tuple(sorted(found, key=lambda candidate: (candidate.trade_date, candidate.isin)))
+    )
+
+
+def _matched_legs(
+    rows: Sequence[NormalisedRow],
+) -> list[tuple[Decimal, tuple[NormalisedRow, ...]]]:
+    """Pair the legs of a group off against each other by amount.
+
+    Matching, not totalling. A group accepted merely because it sums to zero
+    absorbs any extra row that does not change the total -- and once the operator
+    resolves that candidate as a corporate action, the extra row is marked
+    non-economic with it. A genuine transaction would leave the economic ledger
+    with no error raised and nothing on the row to notice.
+
+    A corporate action moves shares, so its legs cancel to the cent against each
+    other: one credit answers one debit of the same local amount. Anything left
+    unmatched is not part of an event and is left alone.
+
+    Two events of different sizes on one day and instrument therefore come back as
+    two candidates. Sharing one key would let a single answer resolve an event
+    nobody looked at.
+    """
+    by_amount: dict[Decimal, tuple[list[NormalisedRow], list[NormalisedRow]]] = defaultdict(
+        lambda: ([], [])
+    )
+    for row in rows:
+        if row.gross_local is None or row.gross_local == 0:
+            continue
+        credits, debits = by_amount[abs(row.gross_local)]
+        (credits if row.gross_local > 0 else debits).append(row)
+
+    matched: list[tuple[Decimal, tuple[NormalisedRow, ...]]] = []
+    for amount, (credits, debits) in by_amount.items():
+        pairs = min(len(credits), len(debits))
+        if pairs:
+            matched.append((amount, (*credits[:pairs], *debits[:pairs])))
+    return matched
+
+
+#: The complete set of fields a resolution may carry. Anything else is a typo, and
+#: a typo here is not cosmetic -- see `load_resolutions`.
+_RESOLUTION_FIELDS = frozenset({"key", "treatment", "note"})
 
 
 def load_resolutions(path: Path) -> dict[str, Resolution]:
@@ -166,25 +217,61 @@ def load_resolutions(path: Path) -> dict[str, Resolution]:
 
     Absence is the normal state of a fresh checkout -- the file is written by
     answering the first quarantine -- so it is not an error. A file that exists but
-    is malformed is, because a typo there silently un-answers a question the ledger
-    depends on.
+    is malformed is, and every malformed shape below raises rather than being
+    interpreted, because the failure mode of guessing is an import that succeeds
+    and is wrong.
+
+    `treatment` is required rather than defaulted, and unknown fields are rejected,
+    for one specific reason. An operator who decides a quarantined pair was a
+    genuine round trip writes `treatment: trade`. Misspell that field and a loader
+    that defaults the missing one reads the entry as `corporate_action`: it
+    suppresses two real trade legs, reports success, and nothing anywhere says the
+    answer given was not the answer used. A default here cannot be safe, because
+    the two possible answers are opposites and both are plausible.
     """
     if not path.exists():
         return {}
 
-    document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as broken:
+        # Reached through the import command, so it has to read as a sentence
+        # about the operator's file rather than as a parser traceback.
+        raise MalformedResolutions(f"{path}: not valid YAML -- {broken}") from broken
+
     if not isinstance(document, dict):
-        raise ValueError(f"{path}: expected a mapping at the top level")
+        raise MalformedResolutions(f"{path}: expected a mapping at the top level")
 
     entries = document.get("resolutions") or []
     resolutions: dict[str, Resolution] = {}
-    for entry in entries:
-        if not isinstance(entry, dict) or "key" not in entry:
-            raise ValueError(f"{path}: every resolution needs a 'key'")
-        treatment = str(entry.get("treatment", CORPORATE_ACTION))
+    for position, entry in enumerate(entries, start=1):
+        where = f"{path}: resolution {position}"
+        if not isinstance(entry, dict):
+            raise MalformedResolutions(f"{where} is not a mapping")
+
+        unknown = sorted(set(entry) - _RESOLUTION_FIELDS)
+        if unknown:
+            raise MalformedResolutions(
+                f"{where} has unknown field(s) {unknown}; expected "
+                f"{sorted(_RESOLUTION_FIELDS)}"
+            )
+
+        key = entry.get("key")
+        if not isinstance(key, str) or not key.strip():
+            raise MalformedResolutions(f"{where} needs a non-empty string 'key'")
+        if key in resolutions:
+            raise MalformedResolutions(f"{path}: key {key!r} is answered twice")
+
+        if "treatment" not in entry:
+            raise MalformedResolutions(
+                f"{where} ({key}) needs a 'treatment' of {sorted(_TREATMENTS)}"
+            )
+        treatment = entry["treatment"]
         if treatment not in _TREATMENTS:
-            raise ValueError(f"{path}: treatment {treatment!r} is not one of {sorted(_TREATMENTS)}")
-        key = str(entry["key"])
+            raise MalformedResolutions(
+                f"{where} ({key}): treatment {treatment!r} is not one of {sorted(_TREATMENTS)}"
+            )
+
         resolutions[key] = Resolution(key=key, treatment=treatment, note=str(entry.get("note", "")))
     return resolutions
 

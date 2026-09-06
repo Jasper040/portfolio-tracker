@@ -11,7 +11,7 @@ directory is absent.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from decimal import Decimal
 from pathlib import Path
 
@@ -50,7 +50,13 @@ def test_every_description_is_recognised() -> None:
 
 
 def test_kept_row_counts_match_the_published_taxonomy() -> None:
-    """Every count in the Sec 3.2 table, asserted at once."""
+    """Every count in the Sec 3.2 table, asserted at once.
+
+    DEPOSIT and WITHDRAWAL now exceed the published table by the three flatex
+    rows: Sec 3.2 lists them as a dropped internal pair, and the Sec 3.6 cash
+    invariant proves they are EUR -8000.00 of real movement. See
+    `test_no_dropped_group_carries_net_euro_cash_away_from_the_ledger`.
+    """
     kept = Counter(r.action.txn_type for r in _rows() if r.action.keep)
     assert kept == Counter(
         {
@@ -59,25 +65,33 @@ def test_kept_row_counts_match_the_published_taxonomy() -> None:
             "DIVIDEND_TAX": 38,
             "FEE": 16,
             "INTEREST": 13,
-            "DEPOSIT": 11,
+            "DEPOSIT": 12,
             "SECURITIES_LENDING": 7,
             "CORPORATE_ACTION": 4,
+            "WITHDRAWAL": 3,
             "TAX": 2,
-            "WITHDRAWAL": 1,
         }
     )
 
 
-def test_only_eleven_deposits_and_one_withdrawal_survive_the_sweep_trap() -> None:
+def test_the_sweep_trap_still_admits_only_the_genuine_external_flows() -> None:
     """Sec 3.3, the highest-risk classification in the project.
 
     256 rows carry real signed euro amounts and plausible running balances while
-    being internal transfers. If any leaked through, this count would be wrong and
-    MWR would be meaningless -- and nothing in the numbers would show it.
+    being internal transfers. If any leaked through, these counts would be wrong
+    and MWR would be meaningless -- and nothing in the numbers would show it.
+
+    11 iDEAL deposits and 1 SEPA withdrawal are the flows Sec 3.2 names. The other
+    three are the flatex transfers, typed by sign because their description does
+    not say which way the money went: +8000.00 in, -8000.00 and -8000.00 out.
     """
     rows = _rows()
-    assert sum(1 for r in rows if r.action.txn_type == "DEPOSIT") == 11
-    assert sum(1 for r in rows if r.action.txn_type == "WITHDRAWAL") == 1
+    deposits = [r for r in rows if r.action.txn_type == "DEPOSIT"]
+    withdrawals = [r for r in rows if r.action.txn_type == "WITHDRAWAL"]
+    assert len(deposits) == 12
+    assert len(withdrawals) == 3
+    assert all(r.change is not None and r.change > 0 for r in deposits)
+    assert all(r.change is not None and r.change < 0 for r in withdrawals)
 
 
 def test_dropped_row_counts_match_the_published_taxonomy() -> None:
@@ -103,6 +117,9 @@ def test_dropped_row_counts_match_the_published_taxonomy() -> None:
     assert dropped["overboeking"] == 116
     assert dropped["degiro transactiekosten"] == 104
     assert dropped["reservation ideal"] == 22
+    # No longer dropped: they carry EUR -8000.00 of real movement between them.
+    assert dropped["processed flatex"] == 0
+    assert dropped["flatex terugstorting"] == 0
     assert dropped["?"] == 0
 
 
@@ -233,3 +250,33 @@ def test_portfolio_snapshot_carries_the_m1_target() -> None:
     snapshot = parse_portfolio_csv(REAL_PORTFOLIO)
     assert len(snapshot.positions) == 6
     assert snapshot.quantity_of("US0000000901") == Decimal("32")
+
+
+def test_no_dropped_group_carries_net_euro_cash_away_from_the_ledger() -> None:
+    """The hole a green reconciliation can hide.
+
+    `combined_eur_cash` is what the Sec 3.6 invariant reconciles against
+    Portfolio.csv, and it reconciles to the cent. But it is computed from the
+    parsed FILE, not from the ledger. A row it counts that classification then
+    drops is money the broker agrees moved and the ledger has no record of --
+    and the invariant still reports green, because it never looked at the ledger.
+
+    Dropping a group is therefore only safe when the group nets to zero. The
+    iDEAL reservations do (22 rows, reserve and release). The flatex transfers do
+    not: they net EUR -8000.00, which is why they are kept and typed by sign.
+
+    The trade duplicates are the one legitimate exception: `Koop`/`Verkoop` and
+    `DEGIRO Transactiekosten` carry real cash, but `Transactions.csv` carries the
+    same movement with more detail (Sec 6.2), so it reaches the ledger as a
+    different row rather than not at all.
+    """
+    groups: dict[str, Decimal] = defaultdict(Decimal)
+    for row in _rows():
+        if row.change is None or row.change_currency != "EUR" or row.action.keep:
+            continue
+        text = row.description.casefold()
+        if text.startswith(("koop ", "verkoop ", "degiro transactiekosten", "degiro cash sweep")):
+            continue
+        groups[text.split(" ")[0]] += row.change
+
+    assert {name: total for name, total in groups.items() if total != 0} == {}

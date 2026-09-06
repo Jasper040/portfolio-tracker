@@ -153,8 +153,8 @@ class TestSuppression:
         with Session(engine) as session:
             rows = session.exec(select(Transaction)).all()
         non_economic = [r for r in rows if not r.is_economic]
-        # 15 trade rows plus the 15 cash-book rows that survive classification.
-        assert len(rows) == 30
+        # 15 trade rows plus the 17 cash-book rows that survive classification.
+        assert len(rows) == 32
         # Two events, each recorded twice by DeGiro: an offsetting share pair in
         # Transactions.csv and the labelled cash pair in Account.csv.
         assert len(non_economic) == 8

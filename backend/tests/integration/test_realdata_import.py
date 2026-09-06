@@ -46,9 +46,9 @@ resolutions:
 
 #: Every row of Transactions.csv.
 TRADE_ROWS = 112
-#: Account.csv's 785 rows less the 469 trade duplicates and internal transfers.
+#: Account.csv's 785 rows less the 466 trade duplicates and internal transfers.
 #: The per-type breakdown this sums is asserted in test_realdata_account.py.
-CASH_ROWS = 316
+CASH_ROWS = 319
 TOTAL_ROWS = TRADE_ROWS + CASH_ROWS
 
 

@@ -53,7 +53,7 @@ def account_row(description: str, change: str | None, currency: str | None = "EU
         balance=None,
         balance_currency=currency,
         order_ref=order_ref,
-        action=classify(description),
+        action=classify(description, change),
         raw={},
     )
 

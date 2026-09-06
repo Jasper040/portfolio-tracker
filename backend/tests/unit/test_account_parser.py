@@ -44,7 +44,7 @@ class TestClassification:
         ],
     )
     def test_maps_each_kept_pattern_to_its_type(self, description: str, expected: str) -> None:
-        action = classify(description)
+        action = classify(description, D("-1.00"))
         assert action.txn_type == expected
         assert action.keep is True
 
@@ -58,36 +58,35 @@ class TestClassification:
             "Overboeking naar uw geldrekening bij flatexDEGIRO Bank",
             "Overboeking van uw geldrekening bij flatexDEGIRO Bank",
             "Reservation iDEAL",
-            "Processed Flatex Withdrawal",
-            "flatex terugstorting",
         ],
     )
     def test_drops_duplicates_and_internal_transfers(self, description: str) -> None:
-        assert classify(description).keep is False
+        assert classify(description, D("-1.00")).keep is False
 
     def test_dividendbelasting_is_not_a_dividend(self) -> None:
         """The trap that prefix matching invites: 'Dividendbelasting' starts with
         'Dividend'. Matching in the wrong order books 38 withholding rows as income
         and inflates dividends received by every cent of tax withheld."""
-        assert classify("Dividendbelasting").txn_type == "DIVIDEND_TAX"
-        assert classify("Dividend").txn_type == "DIVIDEND"
+        assert classify("Dividendbelasting", D("-1.00")).txn_type == "DIVIDEND_TAX"
+        assert classify("Dividend", D("1.00")).txn_type == "DIVIDEND"
 
     def test_sepa_terugstorting_is_not_the_flatex_one(self) -> None:
-        """Both descriptions contain 'terugstorting', but one is the account's only
-        genuine outflow and the other is half of an internal offsetting pair."""
-        assert classify("SEPA Instant Terugstorting").txn_type == "WITHDRAWAL"
-        assert classify("flatex terugstorting").keep is False
+        """Both descriptions contain 'terugstorting' and both are real outflows,
+        but only one is named as a direction: `flatex terugstorting` is typed by the
+        sign of its amount, so the same wording could equally book a deposit."""
+        assert classify("SEPA Instant Terugstorting", D("-75.00")).txn_type == "WITHDRAWAL"
+        assert classify("flatex terugstorting", D("-8000.00")).txn_type == "WITHDRAWAL"
 
     def test_reservation_ideal_is_not_an_ideal_deposit(self) -> None:
         # 22 reserve/release rows net to exactly EUR 0.00; only 11 rows are real.
-        assert classify("Reservation iDEAL").keep is False
-        assert classify("iDEAL Deposit").txn_type == "DEPOSIT"
+        assert classify("Reservation iDEAL", D("-250.00")).keep is False
+        assert classify("iDEAL Deposit", D("1000.00")).txn_type == "DEPOSIT"
 
     def test_an_unknown_description_is_reported_not_guessed(self) -> None:
         """A description this parser has not been taught must not be silently
         dropped or silently kept. Sec 3.2 says the field is free text and DeGiro
         has already changed its wording once."""
-        action = classify("Iets Geheel Nieuws")
+        action = classify("Iets Geheel Nieuws", D("1.00"))
         assert action.keep is False
         assert action.txn_type is None
         assert action.recognised is False
@@ -113,26 +112,31 @@ class TestParsing:
                 "CORPORATE_ACTION": 4,
                 "FX_CONVERT": 2,
                 "INTEREST": 2,
+                "DEPOSIT": 2,
+                "WITHDRAWAL": 2,
                 "TAX": 1,
                 "DIVIDEND": 1,
                 "DIVIDEND_TAX": 1,
-                "DEPOSIT": 1,
-                "WITHDRAWAL": 1,
                 "SECURITIES_LENDING": 1,
                 "FEE": 1,
             }
         )
-        # 24 rows in, 9 dropped as trade duplicates or internal transfers.
-        assert sum(kept.values()) == 15
+        # 24 rows in, 7 dropped as trade duplicates or internal transfers.
+        assert sum(kept.values()) == 17
 
-    def test_the_only_genuine_flows_are_one_deposit_and_one_withdrawal(self) -> None:
+    def test_only_the_genuine_flows_survive_the_sweep_trap(self) -> None:
         """Sec 3.3: the sweep rows carry real amounts and plausible balances. If any
-        of them leaked through, this count would be wrong and MWR would be too."""
+        of them leaked through, these would be wrong and MWR would be too.
+
+        The flatex pair joins the iDEAL deposit and the SEPA withdrawal because it
+        is a movement to the owner's own bank, not within the broker -- typed by
+        sign, since the description does not say which way the money went.
+        """
         rows = parse_account_csv(GOLDEN)
         deposits = [r for r in rows if r.action.txn_type == "DEPOSIT"]
         withdrawals = [r for r in rows if r.action.txn_type == "WITHDRAWAL"]
-        assert [r.change for r in deposits] == [D("1000.00")]
-        assert [r.change for r in withdrawals] == [D("-75.00")]
+        assert sorted(r.change for r in deposits) == [D("800.00"), D("1000.00")]
+        assert sorted(r.change for r in withdrawals) == [D("-800.00"), D("-75.00")]
 
     def test_parses_dutch_amounts_and_dates(self) -> None:
         row = next(r for r in parse_account_csv(GOLDEN) if r.action.txn_type == "DEPOSIT")
@@ -188,6 +192,6 @@ class TestActionShape:
         # Keeping a type on a dropped row invites a later change to import it by
         # accident, which is exactly the cash-sweep failure.
         for description in ("Degiro Cash Sweep Transfer", "Koop 1 @ 1,00 EUR"):
-            action: AccountAction = classify(description)
+            action: AccountAction = classify(description, D("-1.00"))
             assert action.keep is False
             assert action.txn_type is None

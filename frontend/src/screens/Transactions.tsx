@@ -50,18 +50,38 @@ function typeTone(txnType: string): { color: string; background: string } {
   return { color: c.textMuted, background: c.neutralBg };
 }
 
+interface Flag {
+  label: string;
+  color: string;
+  background: string;
+}
+
 /** Surface the two ledger flags the API does send.
  *
- *  `is_economic === false` marks a row that nets to nothing economically (a
- *  bookkeeping pair), and `closure_reason` other than DECISION means the position
- *  was closed by something that was not a choice -- a corporate action, say. Both
- *  change how a row should be read, so neither is hidden. */
-function flagFor(txn: Transaction): { label: string; color: string } | null {
-  if (!txn.is_economic) return { label: "NON-ECON", color: c.textFaint };
-  if (txn.closure_reason && txn.closure_reason !== "DECISION") {
-    return { label: txn.closure_reason.toUpperCase(), color: c.modelled };
+ *  `is_economic === false` marks a row that is in the ledger but is not an
+ *  economic event -- a corporate action's legs, say, which look exactly like a
+ *  buy and a sell and are neither. That is the single most important qualifier a
+ *  row can carry, so it is a chip in the same amber the app uses everywhere else
+ *  for "do not read this at face value", not faint text: a reader scanning for
+ *  the rows that are not what they appear to be has to be able to find them.
+ *
+ *  Both flags are returned, not the first one. A row can be non-economic AND have
+ *  closed a position mechanically, and dropping the second because the first
+ *  matched would hide the reason behind the reason.
+ */
+function flagsFor(txn: Transaction): Flag[] {
+  const flags: Flag[] = [];
+  if (!txn.is_economic) {
+    flags.push({ label: "NON-ECON", color: c.modelled, background: c.modelledBg });
   }
-  return null;
+  if (txn.closure_reason && txn.closure_reason !== "DECISION") {
+    flags.push({
+      label: txn.closure_reason.toUpperCase(),
+      color: c.textSecondary,
+      background: c.neutralBg,
+    });
+  }
+  return flags;
 }
 
 export function Transactions() {
@@ -171,7 +191,7 @@ export function Transactions() {
               {items.map((txn, i) => {
                 const isOpen = expanded[txn.id] ?? false;
                 const tone = typeTone(txn.txn_type);
-                const flag = flagFor(txn);
+                const flags = flagsFor(txn);
                 return (
                   <Fragment key={txn.id}>
                     <tr
@@ -214,11 +234,17 @@ export function Transactions() {
                       <Td padding="8px 11px" color={c.textFaint} nowrap>—</Td>
                       <Td padding="8px 11px" color={c.textFaint} nowrap>—</Td>
                       <Td padding="8px 11px">
-                        {flag && (
-                          <span style={{ fontFamily: mono, fontSize: 9.5, color: flag.color }}>
-                            {flag.label}
-                          </span>
-                        )}
+                        <span style={{ display: "inline-flex", gap: 4 }}>
+                          {flags.map((flag) => (
+                            <Badge
+                              key={flag.label}
+                              color={flag.color}
+                              background={flag.background}
+                            >
+                              {flag.label}
+                            </Badge>
+                          ))}
+                        </span>
                       </Td>
                     </tr>
 

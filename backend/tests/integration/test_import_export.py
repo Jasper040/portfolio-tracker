@@ -32,8 +32,8 @@ resolutions:
     treatment: corporate_action
 """
 
-#: 15 trade rows plus the 15 cash-book rows that survive classification.
-TOTAL_ROWS = 30
+#: 15 trade rows plus the 17 cash-book rows that survive classification.
+TOTAL_ROWS = 32
 
 
 def _engine() -> Engine:

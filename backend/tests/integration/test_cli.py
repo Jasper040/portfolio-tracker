@@ -81,7 +81,7 @@ class TestImport:
             ["import", str(export), "--resolutions", str(_resolutions(tmp_path, RESOLVE_BOTH))],
         )
         assert result.exit_code == 0
-        assert "inserted 30" in result.output
+        assert "inserted 32" in result.output
 
     def test_a_second_import_inserts_nothing(self, export: Path, tmp_path: Path) -> None:
         resolutions = str(_resolutions(tmp_path, RESOLVE_BOTH))
