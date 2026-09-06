@@ -10,10 +10,14 @@ dependencies = [
     "typer>=0.15",
     "pandas>=2.2",
     "pyyaml>=6.0",
+    # Runtime from M2: `providers/` needs a real HTTP client. It was already
+    # installed as a dev dependency for FastAPI's test client; two HTTP clients
+    # would mean two timeout and TLS configurations.
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "httpx>=0.28", "ruff>=0.8", "mypy>=1.13", "types-PyYAML>=6.0"]
+dev = ["pytest>=8.3", "ruff>=0.8", "mypy>=1.13", "types-PyYAML>=6.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

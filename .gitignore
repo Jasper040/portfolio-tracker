@@ -8,6 +8,10 @@ data/
 # Corporate-action answers (design doc Sec 6.3). A key is ISIN:date:amount --
 # a holding and its size. The committed .example.yaml documents the format.
 config/corporate_actions.yaml
+# Symbol answers and hand-maintained prices (M2 spec section 6.3). Both are keyed
+# by ISIN, which is a holding. The .example files document the formats.
+config/instrument_symbols.yaml
+config/manual_prices.csv
 *.sqlite
 *.sqlite3
 *.db
