@@ -148,7 +148,7 @@ export function Dashboard({ data, agg, method, onOpenWhatIf }: DashboardProps) {
         </span>
       </div>
 
-      <TileGrid tiles={kpis} />
+      <TileGrid tiles={kpis} columns={4} />
 
       <Panel
         title="Portfolio value"

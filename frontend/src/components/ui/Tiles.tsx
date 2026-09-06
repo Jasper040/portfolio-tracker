@@ -19,11 +19,23 @@ export interface Tile {
 
 export interface TileGridProps {
   tiles: readonly Tile[];
-  /** Minimum tile width before the grid reflows. */
+  /** Minimum tile width before the grid reflows. Ignored when `columns` is set. */
   minWidth?: number;
   /** Font size of the value line. KPI rows use 19, inline stat strips 14. */
   valueSize?: number;
   background?: string;
+  /** Pin the grid to a fixed column count instead of letting it auto-fit.
+   *
+   *  `auto-fit` derives its column count from the available width, which is fine
+   *  until the tile count does not divide by it: eight KPIs in seven columns
+   *  leaves one tile alone on row two beside six empty cells, and because the
+   *  dividers are the container background showing through, that gap reads as one
+   *  large empty tile rather than as absence.
+   *
+   *  A fixed 4 divides 8 exactly at every breakpoint it steps down through
+   *  (4 -> 2 -> 1), so the grid is always full. The steps are media queries, which
+   *  inline styles cannot express, so they live in `styles.css`. */
+  columns?: 4;
 }
 
 export function TileGrid({
@@ -31,12 +43,17 @@ export function TileGrid({
   minWidth = 158,
   valueSize = 19,
   background = c.panel,
+  columns,
 }: TileGridProps) {
   return (
     <div
+      className={columns === 4 ? "tile-grid-4" : undefined}
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(auto-fit, minmax(${minWidth}px, 1fr))`,
+        // Omitted entirely when `columns` is set, so the stylesheet's
+        // `grid-template-columns` is not fighting an inline declaration it can
+        // never win against.
+        ...(columns ? {} : { gridTemplateColumns: `repeat(auto-fit, minmax(${minWidth}px, 1fr))` }),
         gap: 1,
         background: c.border,
         border: `1px solid ${c.border}`,
