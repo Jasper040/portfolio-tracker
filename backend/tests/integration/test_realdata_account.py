@@ -21,6 +21,7 @@ from app.ingest.degiro.account_csv import AccountRow, parse_account_csv
 from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
 from app.ingest.degiro.transactions_csv import parse_transactions_csv
 from app.ingest.reconcile import AGGREGATE_TOLERANCE, combined_eur_cash, reconcile
+from tests.integration import realdata_subject as subject
 
 REAL = Path(__file__).parents[3] / "degiro-export" / "Account.csv"
 
@@ -139,7 +140,7 @@ def test_the_flatex_withdrawal_pattern_has_three_rows_not_two() -> None:
 
     Whether that is correct depends on whether the money left the flatex bank
     account or merely moved within it, and the Sec 3.6 cash invariant
-    (computed EUR cash == Portfolio.csv, -2241.16) is the test that settles it.
+    (computed EUR cash == Portfolio.csv) is the test that settles it.
     That invariant is not implemented yet, so this test pins the observed shape so
     the question cannot be silently lost.
     """
@@ -184,7 +185,10 @@ def test_commission_total_is_the_published_figure() -> None:
         )
     )
     ledger_fees = sum(t.fee_base for t in parse_transactions_csv(REAL_TXNS))
-    assert account_fees == ledger_fees == Decimal("-252.00")
+    assert account_fees == ledger_fees == subject.transaction_fee_total()
+    # The broker really did charge commission, so a change zeroing both sides
+    # is caught rather than passing as 0 == 0.
+    assert account_fees < Decimal("0")
 
 
 @pytest.mark.skipif(not REAL_TXNS.exists(), reason="real DeGiro export not present")
@@ -203,14 +207,14 @@ def test_computed_cash_reproduces_the_brokers_own_balance() -> None:
 
     Portfolio.csv reports ONE combined cash line covering the DeGiro cash account
     and the flatex bank account, so the sweep between them nets out and everything
-    else counts. Computed -2241.15 against a stated -2241.16: a cent, well inside
+    else counts. Computed against the broker's stated balance: a cent apart, well inside
     the Sec 5.4 aggregate tolerance of EUR 0.50, and consistent with the broker's
     own arithmetic disagreeing with itself by a cent on 14 of 112 rows.
     """
 
     stated = parse_portfolio_csv(REAL_PORTFOLIO).cash_base
     computed = combined_eur_cash(_rows())
-    assert stated == Decimal("-2241.16")
+    assert stated == subject.broker_cash_balance()
     assert abs(computed - stated) <= AGGREGATE_TOLERANCE
 
 
@@ -245,11 +249,22 @@ def test_the_flatex_rows_are_real_cash_movements_not_an_internal_pair() -> None:
 
 @pytest.mark.skipif(not REAL_PORTFOLIO.exists(), reason="real DeGiro export not present")
 def test_portfolio_snapshot_carries_the_m1_target() -> None:
-    """ORN = 32 is the number M1's corporate-action path has to reproduce."""
+    """The split instrument's share count is what M1's corporate-action path has to
+    reproduce, so this file has to be able to state it.
 
+    The figure itself stays in the gitignored export (Sec 13): what is asserted here
+    is that the reader reaches it and that it is the post-split count rather than the
+    pre-split one -- which is the only part a parser bug could get wrong.
+    """
     snapshot = parse_portfolio_csv(REAL_PORTFOLIO)
-    assert len(snapshot.positions) == 6
-    assert snapshot.quantity_of("US0000000901") == Decimal("32")
+    split = subject.split()
+
+    assert snapshot.positions, "the broker's statement lists no positions"
+    held = snapshot.quantity_of(split.isin)
+    # Strictly more than the restated opening lot, because shares were bought after
+    # the split too -- and strictly more than the pre-split count, which is what a
+    # reader that missed the corporate action entirely would report.
+    assert held > split.post_split_quantity > split.pre_split_quantity
 
 
 def test_no_dropped_group_carries_net_euro_cash_away_from_the_ledger() -> None:

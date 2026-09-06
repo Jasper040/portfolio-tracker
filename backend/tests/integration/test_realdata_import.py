@@ -20,6 +20,7 @@ from sqlmodel import Session, select
 from app.db import create_engine_and_tables
 from app.ingest.importer import ensure_default_account, import_degiro_export, undo_batch
 from app.models.ledger import Transaction
+from tests.integration import realdata_subject as subject
 
 EXPORT = Path(__file__).parents[3] / "degiro-export"
 
@@ -31,8 +32,10 @@ pytestmark = [
     ),
 ]
 
-ORION_KEY = "US0000000901:2025-02-18:910.40"
-MERIDIAN_KEY = "US0000000902:2026-08-14:845.75"
+# Both keys are read from the export, never written down: they name the owner's
+# instruments, and Sec 13 keeps those out of the repo.
+ORION_KEY = subject.split_key() if subject.available() else ""
+MERIDIAN_KEY = subject.product_change_key() if subject.available() else ""
 
 RESOLUTIONS = f"""\
 resolutions:
@@ -99,7 +102,7 @@ def test_the_two_corporate_actions_land_non_economic(resolutions: Path) -> None:
         rows = session.exec(select(Transaction)).all()
     suppressed = [row for row in rows if not row.is_economic]
     assert len(suppressed) == 8
-    assert {row.isin for row in suppressed} == {"US0000000901", "US0000000902"}
+    assert {row.isin for row in suppressed} == subject.suppressed_isins()
 
 
 def test_an_unresolved_export_imports_nothing(tmp_path: Path) -> None:

@@ -12,7 +12,6 @@ the directory is absent.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from app.ingest.corporate_actions import (
 )
 from app.ingest.degiro.account_csv import parse_account_csv
 from app.ingest.degiro.transactions_csv import parse_transactions_csv
+from tests.integration import realdata_subject as subject
 
 EXPORT = Path(__file__).parents[3] / "degiro-export"
 REAL_TRANSACTIONS = EXPORT / "Transactions.csv"
@@ -38,8 +38,9 @@ pytestmark = [
     ),
 ]
 
-ORION_KEY = "US0000000901:2025-02-18:910.40"
-MERIDIAN_KEY = "US0000000902:2026-08-14:845.75"
+# Read from the export rather than written down -- see `realdata_subject`.
+ORION_KEY = subject.split_key() if subject.available() else ""
+MERIDIAN_KEY = subject.product_change_key() if subject.available() else ""
 
 
 def _found() -> tuple[CorporateAction, ...]:
@@ -61,17 +62,21 @@ def test_account_csv_names_every_candidate() -> None:
 
 
 def test_the_split_joins_on_the_local_amount() -> None:
-    """USD 910.40, not the EUR 845.60 the same rows also carry."""
+    """The LOCAL amount, not the euro figure the same rows also carry.
+
+    Sec 3.4 joins the two files on the trade-currency amount; keying on euros
+    would match nothing on a foreign-currency action."""
     orion = next(c for c in _found() if c.key == ORION_KEY)
-    assert orion.local_amount == Decimal("910.40")
+    assert orion.local_amount == subject.split().local_amount
     assert orion.label.startswith("SPLIT AANPASSING")
 
 
 def test_the_product_change_joins_on_the_local_amount() -> None:
-    """USD 845.75, where `Value EUR` reads 733.20 -- the currency trap, in the
+    """The local amount again, where `Value EUR` reads something else entirely
+    -- the currency trap, in the
     only place it can be observed against real broker data."""
     meridian = next(c for c in _found() if c.key == MERIDIAN_KEY)
-    assert meridian.local_amount == Decimal("845.75")
+    assert meridian.local_amount == subject.product_change()[2]
     assert meridian.label.startswith("PRODUCTWIJZIGING")
 
 
