@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, field_serializer
 
-from app.models.ledger import Transaction
+from app.models.ledger import Lot, LotClosure, Transaction
 
 #: Which lot-matching method produced the realised figures in a response.
 #: `None` is a real answer, not a missing one: it means no matching was applied,
@@ -94,3 +94,102 @@ class TransactionPage(Provenance):
     total: int
     limit: int
     offset: int
+
+
+class LotOut(BaseModel):
+    id: str
+    method: str
+    isin: str
+    source_ref: str
+    opened_on: date
+    quantity: Decimal
+    price: Decimal
+    cost_basis: Decimal
+    commission: Decimal
+    autofx: Decimal
+    tax: Decimal
+
+    @field_serializer("quantity", "price", "cost_basis", "commission", "autofx", "tax")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @classmethod
+    def from_model(cls, lot: "Lot") -> "LotOut":
+        return cls(
+            id=str(lot.id),
+            method=lot.method,
+            isin=lot.isin,
+            source_ref=lot.source_ref,
+            opened_on=lot.opened_on,
+            quantity=lot.quantity,
+            price=lot.price,
+            cost_basis=lot.cost_basis,
+            commission=lot.commission,
+            autofx=lot.autofx,
+            tax=lot.tax,
+        )
+
+
+class LotPage(Provenance):
+    items: list[LotOut]
+    total: int
+
+
+class ClosureOut(BaseModel):
+    id: str
+    method: str
+    isin: str
+    lot_source_ref: str
+    opened_on: date
+    closed_on: date
+    quantity: Decimal
+    open_price: Decimal
+    close_price: Decimal
+    gross_pnl: Decimal
+    commission: Decimal
+    autofx: Decimal
+    tax: Decimal
+    pnl: Decimal
+    holding_days: int
+    return_pct: Decimal | None
+    annualised_return: Decimal | None
+
+    @field_serializer(
+        "quantity", "open_price", "close_price", "gross_pnl",
+        "commission", "autofx", "tax", "pnl",
+    )
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("return_pct", "annualised_return")
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        """`None` stays `None`, never becomes "0". A same-day round trip has no
+        annualised return; reporting zero would claim it broke even."""
+        return None if value is None else str(value)
+
+    @classmethod
+    def from_model(cls, closure: "LotClosure") -> "ClosureOut":
+        return cls(
+            id=str(closure.id),
+            method=closure.method,
+            isin=closure.isin,
+            lot_source_ref=closure.lot_source_ref,
+            opened_on=closure.opened_on,
+            closed_on=closure.closed_on,
+            quantity=closure.quantity,
+            open_price=closure.open_price,
+            close_price=closure.close_price,
+            gross_pnl=closure.gross_pnl,
+            commission=closure.commission,
+            autofx=closure.autofx,
+            tax=closure.tax,
+            pnl=closure.pnl,
+            holding_days=closure.holding_days,
+            return_pct=closure.return_pct,
+            annualised_return=closure.annualised_return,
+        )
+
+
+class ClosurePage(Provenance):
+    items: list[ClosureOut]
+    total: int
