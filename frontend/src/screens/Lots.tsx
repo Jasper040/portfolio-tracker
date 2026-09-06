@@ -1,6 +1,10 @@
 /** Open lots and closures, straight from the ledger. The second screen reading
  *  real data.
  *
+ *  Every figure here is formatted from the exact decimal string the API sent --
+ *  money through `decimalEur`, the return through `decimalPercent`. Nothing on
+ *  this screen is passed through `Number()`. See `api/types.ts` for why.
+ *
  *  No market value here, and that is deliberate: a position's worth needs a price
  *  series, which is M2. Putting a cost basis under a heading that implied market
  *  value would be exactly the "plausible guess" the Transactions screen refuses
@@ -24,7 +28,13 @@ import {
   type ColumnDef,
 } from "../components/ui/Table";
 import { c, mono } from "../lib/theme";
-import { decimal, decimalEur, decimalIsNegative, shortDate } from "../lib/format";
+import {
+  decimal,
+  decimalEur,
+  decimalIsNegative,
+  decimalPercent,
+  shortDate,
+} from "../lib/format";
 
 const LOT_COLUMNS: readonly ColumnDef[] = [
   { label: "ISIN" },
@@ -52,20 +62,6 @@ const CLOSURE_COLUMNS: readonly ColumnDef[] = [
   { label: "RETURN", align: "right" },
   { label: "DAYS", align: "right" },
 ];
-
-/** A ratio held as a decimal string, rendered as a percentage.
- *
- *  `null` renders an em-dash, never "0%": a same-day round trip has no annualised
- *  return, and a zero there would claim it broke even. This is the one place a
- *  ledger-sourced string is parsed, and it is safe because the result decides a
- *  label rather than a figure -- see `api/types.ts`.
- */
-function percent(value: string | null): string {
-  if (value === null) return "—";
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return "—";
-  return `${(parsed * 100).toFixed(2)}%`;
-}
 
 export interface LotsProps {
   method: LotMethodTag;
@@ -228,7 +224,7 @@ export function Lots({ method }: LotsProps) {
                   {decimalEur(closure.pnl)}
                 </Td>
                 <Td padding="8px 11px" align="right" numeric>
-                  {percent(closure.return_pct)}
+                  {decimalPercent(closure.return_pct)}
                 </Td>
                 <Td padding="8px 11px" align="right" numeric>
                   {closure.holding_days}

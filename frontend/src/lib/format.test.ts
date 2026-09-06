@@ -5,6 +5,7 @@ import {
   decimal,
   decimalEur,
   decimalIsNegative,
+  decimalPercent,
   eur,
   eurCompact,
   eurSigned,
@@ -131,6 +132,74 @@ describe("decimal — rounding via maxDecimals (string arithmetic, never Number(
     // The acceptance figure for the ORION lot: 65,530 must survive untouched.
     expect(decimal("65.530", 2, 4)).toBe("65,530");
     expect(decimal("153.70", 2, 4)).toBe("153,70");
+  });
+});
+
+describe("decimalPercent — a ratio string as a percentage, never through Number()", () => {
+  it("moves the point two places and formats like every other cell", () => {
+    expect(decimalPercent("0.1234")).toBe("12,34%");
+    expect(decimalPercent("0.5")).toBe("50,00%");
+  });
+
+  it("renders a negative return with a typographic minus, not a hyphen", () => {
+    // The bug this replaced: `Number(v).toFixed(2)` emitted "-12.34%" beside a
+    // "1.234,56" money column -- ASCII hyphen, ASCII point, no grouping.
+    expect(decimalPercent("-0.1234")).toBe(`${MINUS}12,34%`);
+    expect(decimalPercent("-0.0525")).toBe(`${MINUS}5,25%`);
+  });
+
+  it("handles a value with no fraction at all", () => {
+    expect(decimalPercent("1")).toBe("100,00%");
+    expect(decimalPercent("0")).toBe("0,00%");
+    expect(decimalPercent("-2")).toBe(`${MINUS}200,00%`);
+  });
+
+  it("handles a fraction shorter than two digits", () => {
+    expect(decimalPercent("0.5")).toBe("50,00%");
+    expect(decimalPercent("0.05")).toBe("5,00%");
+    expect(decimalPercent(".5")).toBe("50,00%");
+  });
+
+  it("renders null as an em dash, never 0%", () => {
+    // A closure whose basis was zero has no return. "0%" would claim it broke
+    // even, which is a different statement from "there is no such figure".
+    expect(decimalPercent(null)).toBe("—");
+    expect(decimalPercent(undefined)).toBe("—");
+    expect(decimalPercent("")).toBe("—");
+    expect(decimalPercent("   ")).toBe("—");
+  });
+
+  it("expands scientific notation rather than mangling it", () => {
+    // `str(Decimal)` emits "1E-7" once the adjusted exponent drops below -6,
+    // which a tiny return_pct reaches. Sliding the dot two characters along that
+    // string would print something that is not a number at all.
+    expect(decimalPercent("1E-7")).toBe("0,00%");
+    expect(decimalPercent("1.5E-3")).toBe("0,15%");
+    expect(decimalPercent("-1.5E-3")).toBe(`${MINUS}0,15%`);
+    expect(decimalPercent("1e-2")).toBe("1,00%");
+    expect(decimalPercent("1E+2")).toBe("10.000,00%");
+    expect(decimalPercent("1.234E2")).toBe("12.340,00%");
+  });
+
+  it("rounds half away from zero at two decimals, in digit space", () => {
+    expect(decimalPercent("0.123456")).toBe("12,35%");
+    expect(decimalPercent("0.0099999")).toBe("1,00%");
+    expect(decimalPercent("-0.123456")).toBe(`${MINUS}12,35%`);
+  });
+
+  it("groups a return large enough to need it", () => {
+    expect(decimalPercent("12.345")).toBe("1.234,50%");
+  });
+
+  it("keeps full precision inputs exact all the way to the rounding step", () => {
+    // The stored return_pct is a full-precision Decimal quotient; only the
+    // display caps it, and it must cap by digits rather than by float.
+    expect(decimalPercent("0.056666666666666666666666667")).toBe("5,67%");
+  });
+
+  it("returns anything that is not a decimal untouched", () => {
+    expect(decimalPercent("abc")).toBe("abc");
+    expect(decimalPercent("1.2.3")).toBe("1.2.3");
   });
 });
 
