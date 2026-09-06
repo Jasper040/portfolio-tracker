@@ -16,6 +16,12 @@ boundary, is what makes two columns possible at all. The rule Sec 7.5 states is
 about the READ side -- the modules that turn a price into a number a reader
 sees -- so the assertion is scoped to `analytics/` and `api/`, where it is not
 vacuous.
+
+**Why `_imports` records the dotted alias too.** `from app.analytics import
+total_return` names a MODULE, not a symbol, and recording only `node.module`
+(`app.analytics`, a package directory with no `.py` file of its own) would dead-end
+the walk on exactly the import this test exists to catch -- do not "simplify" it
+back to `node.module` alone.
 """
 
 from __future__ import annotations
@@ -65,7 +71,26 @@ def _imports(path: Path) -> set[str]:
             found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             found.add(node.module)
+            # `from app.analytics import total_return` names a MODULE, not a
+            # symbol. Recording only `app.analytics` dead-ends the walk on a
+            # package directory with no .py file -- which would let exactly the
+            # import this test exists to catch slip through. The dotted form
+            # over-approximates (it also records
+            # `app.analytics.valuation.value_series` for a symbol import), and
+            # that costs nothing: a name that resolves to no file is skipped by
+            # the walk.
+            found.update(f"{node.module}.{alias.name}" for alias in node.names)
     return found
+
+def _module_path(module: str) -> Path:
+    """The file a dotted module name resolves to: a plain module, or a
+    package's `__init__.py`. A package that only re-exports through its
+    `__init__.py` would otherwise be a second, unwalked way through."""
+    base = APP.parent / module.replace(".", "/")
+    as_module = base.with_suffix(".py")
+    if as_module.exists():
+        return as_module
+    return base / "__init__.py"
 
 def _reachable_from(start: str) -> set[str]:
     """Every `app.*` module reachable by following imports from `start`."""
@@ -76,7 +101,7 @@ def _reachable_from(start: str) -> set[str]:
         if module in seen or not module.startswith("app."):
             continue
         seen.add(module)
-        path = APP.parent / (module.replace(".", "/") + ".py")
+        path = _module_path(module)
         if not path.exists():
             continue
         queue.extend(_imports(path))
