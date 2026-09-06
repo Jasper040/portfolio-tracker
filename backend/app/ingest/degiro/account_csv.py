@@ -22,11 +22,13 @@ flagged, because Sec 3.4 notes DeGiro has already changed its wording once.
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from app.ingest.base import NormalisedRow
 from app.ingest.degiro.dialect import (
     ACCOUNT_HEADER,
     ACCOUNT_RAW_FIELDS,
@@ -35,6 +37,7 @@ from app.ingest.degiro.dialect import (
     parse_dutch_date,
     parse_optional_decimal,
 )
+from app.ingest.source_ref import AccountRefInput, assign_source_refs
 
 PARSER_VERSION = "degiro-account-1"
 SOURCE = "degiro"
@@ -196,3 +199,68 @@ def parse_account_csv(path: Path) -> list[AccountRow]:
             raise MalformedRow(f"{path.name} line {line_no}: {exc}") from exc
 
     return rows
+
+
+_ZERO = Decimal("0.00")
+_ACCOUNT_REF_KIND = "degiro-account"
+
+
+def normalise_account_rows(rows: Sequence[AccountRow]) -> list[NormalisedRow]:
+    """Turn classified cash-book rows into ledger rows, dropping what is not real.
+
+    Only `keep` rows survive. The nine dropped kinds in the golden file -- and 256
+    in the real export -- are trade duplicates `Transactions.csv` already owns and
+    internal transfers that never left the account (Sec 3.3).
+
+    `net_base` is euros or nothing. DeGiro books an AUD dividend in AUD and
+    converts on a separate `Valuta Creditering` row, so this row moved no euros;
+    the AUD figure is kept verbatim in `gross_local` beside its currency. Copying
+    it into a euro column would make summing the ledger add AUD to EUR silently,
+    which is worse than a zero that is visibly incomplete.
+
+    `fee_base` and `tax_base` stay zero even on a `FEE` or `DIVIDEND_TAX` row: here
+    the amount IS the transaction, and duplicating it into a component column would
+    double it in any total that adds the two. Sec 6.4's per-lot fee attribution
+    reads the trade file, where a fee really is a component of a larger amount.
+
+    All `FEE` rows from this file are portfolio-level by construction -- the only
+    rule producing one is `Aansluitingskosten`, which Sec 6.4 says is never
+    attributed to a lot -- so the distinction survives as the type plus the source.
+    """
+    kept = [row for row in rows if row.action.keep and row.action.txn_type]
+    refs = assign_source_refs(
+        [
+            AccountRefInput(
+                kind=_ACCOUNT_REF_KIND,
+                trade_datetime=f"{row.raw['Date'].strip()}T{row.raw['Time'].strip()}",
+                isin=row.isin or "",
+                description=row.description,
+                change=row.raw["Change"].strip(),
+                currency=row.change_currency or "",
+            )
+            for row in kept
+        ]
+    )
+
+    return [
+        NormalisedRow(
+            source=SOURCE,
+            source_ref=ref,
+            # `kept` is filtered on a truthy txn_type above, so this is never None.
+            txn_type=str(row.action.txn_type),
+            trade_date=row.trade_date,
+            trade_time=row.trade_time,
+            settle_date=row.value_date,
+            net_base=(row.change or _ZERO) if row.change_currency == "EUR" else _ZERO,
+            fee_base=_ZERO,
+            tax_base=_ZERO,
+            isin=row.isin,
+            product_name=row.product,
+            gross_local=row.change,
+            currency_local=row.change_currency,
+            fx_rate=row.fx_rate,
+            order_ref=row.order_ref,
+            raw=row.raw,
+        )
+        for row, ref in zip(kept, refs, strict=True)
+    ]

@@ -153,7 +153,8 @@ class TestSuppression:
         with Session(engine) as session:
             rows = session.exec(select(Transaction)).all()
         non_economic = [r for r in rows if not r.is_economic]
-        assert len(rows) == 15
+        # 15 trade rows plus the 15 cash-book rows that survive classification.
+        assert len(rows) == 30
         assert len(non_economic) == 4
 
     def test_a_suppressed_row_records_why_it_was_suppressed(

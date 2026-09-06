@@ -1,0 +1,33 @@
+# Corporate-action resolutions (design doc Sec 6.3).
+#
+# Copy to `corporate_actions.yaml` alongside this file and answer each key the
+# importer refuses on. That file is gitignored: a key names an instrument, a date
+# and an amount, which is a holding and its size.
+#
+# Why a file and not a database row: these are decisions, not data. They want to be
+# read, diffed and reasoned about, and `rebuild()` has to reproduce them without
+# asking again.
+#
+# `key` is printed verbatim by the import that refused. Copy it -- retyping one
+# produces an answer that parses cleanly and applies to nothing.
+#   Format: ISIN:YYYY-MM-DD:LOCAL_AMOUNT   (the amount is in the LOCAL currency,
+#   not EUR; that is the amount both exports agree on.)
+#
+# `treatment`:
+#   corporate_action  the pair moved shares, not money. Both rows are imported and
+#                     flagged non-economic, so lot matching steps over them.
+#   trade             the value shape matched a genuine round trip. Nothing is
+#                     suppressed. This is the escape hatch for a false positive.
+#
+# `note` is free text and is stored on the review row. Say what the event was --
+# "10-for-1 split" is worth more in a year than the ratio you can re-derive.
+
+resolutions:
+  # The synthetic events in backend/tests/golden/. Real ones look the same.
+  - key: NL0000000003:2025-01-17:100.00
+    treatment: corporate_action
+    note: TEST SPLIT NV 10-for-1 split
+
+  - key: US0000000002:2025-01-18:100.00
+    treatment: corporate_action
+    note: TEST COMMA CORP product change

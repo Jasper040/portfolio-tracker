@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from app.ingest.base import NormalisedRow
 from app.ingest.corporate_actions import (
     CorporateAction,
     Resolution,
@@ -32,7 +33,8 @@ from app.ingest.corporate_actions import (
     pending,
     suppressed_refs,
 )
-from app.ingest.degiro.account_csv import parse_account_csv
+from app.ingest.degiro.account_csv import PARSER_VERSION as ACCOUNT_PARSER_VERSION
+from app.ingest.degiro.account_csv import normalise_account_rows, parse_account_csv
 from app.ingest.degiro.transactions_csv import PARSER_VERSION, SOURCE, parse_transactions_csv
 from app.models.ledger import Account, CorporateActionReview, ImportBatch, Transaction
 
@@ -74,8 +76,17 @@ def ensure_default_account(engine: Engine) -> UUID:
         return account.id
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _sha256(*paths: Path) -> str:
+    """Hash the whole set of files an import read.
+
+    Hashing the concatenated bytes rather than one file: a batch covers both
+    exports, and re-running against a changed `Account.csv` is a different import
+    even when the trade file is byte-identical.
+    """
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def import_transactions_file(
@@ -84,19 +95,42 @@ def import_transactions_file(
     account_id: UUID,
     suppressed: Mapping[str, str] | None = None,
 ) -> ImportResult:
-    """Parse `path` and insert every row not already present.
+    """Parse `path` and insert every trade row not already present.
 
     A `MalformedRow` from the parser is allowed to propagate: a broken export must
     abort the whole import rather than land partially, so it is not caught here.
 
+    This is the trade file alone, without the Sec 6.3 gate. `import_degiro_export`
+    is the operator-facing entry point.
+    """
+    return insert_rows(
+        engine,
+        account_id,
+        parse_transactions_csv(path),
+        filename=path.name,
+        file_sha256=_sha256(path),
+        parser_version=PARSER_VERSION,
+        suppressed=suppressed,
+    )
+
+
+def insert_rows(
+    engine: Engine,
+    account_id: UUID,
+    rows: Sequence[NormalisedRow],
+    *,
+    filename: str,
+    file_sha256: str,
+    parser_version: str,
+    suppressed: Mapping[str, str] | None = None,
+) -> ImportResult:
+    """Write one batch and the rows it inserts. The mechanical half of an import.
+
     `suppressed` maps a `source_ref` to the reason it is not an economic event --
     a resolved corporate action. Those rows are still inserted, because the ledger
     records what the export said, but they are flagged so lot matching skips them.
-    This is the mechanical half of the import; the Sec 6.3 gate that decides what
-    belongs in `suppressed` lives in `import_degiro_export`.
     """
     reasons = suppressed or {}
-    rows = parse_transactions_csv(path)
     batch_id = uuid4()
 
     with Session(engine) as session:
@@ -112,9 +146,9 @@ def import_transactions_file(
             ImportBatch(
                 id=batch_id,
                 source=SOURCE,
-                filename=path.name,
-                file_sha256=_sha256(path),
-                parser_version=PARSER_VERSION,
+                filename=filename,
+                file_sha256=file_sha256,
+                parser_version=parser_version,
                 imported_at=datetime.now(timezone.utc),
                 row_count=len(rows),
                 inserted_count=len(fresh),
@@ -219,15 +253,13 @@ def import_degiro_export(
 ) -> ImportResult:
     """Import a DeGiro export directory, refusing while a corporate action is open.
 
-    Both files are read before anything is written. `Account.csv` is not imported
-    here -- it is authoritative for everything that is not a trade (Sec 6.2), but
-    what it contributes to *this* step is the corporate-action label that
-    `Transactions.csv` does not carry.
+    Both files land in one batch. `Transactions.csv` is authoritative for trades
+    and `Account.csv` for everything else (Sec 6.2), so a ledger built from only
+    the first is a trade blotter with no dividends, deposits or fees -- and an
+    import is one operation, which Sec 3's undo has to reverse with one id.
 
-    The file is parsed twice: once here to detect, once inside
-    `import_transactions_file`, which owns the file hash and parser version it
-    records on the batch. Source refs are deterministic, so the two parses agree by
-    construction, and 112 rows is not worth coupling the two steps to avoid.
+    Everything is read and checked before anything is written: an export with an
+    unanswered corporate action leaves no batch and no rows at all.
     """
     transactions_path = export_dir / TRANSACTIONS_FILENAME
     account_path = export_dir / ACCOUNT_FILENAME
@@ -235,7 +267,10 @@ def import_degiro_export(
         if not required.exists():
             raise FileNotFoundError(f"{required} is missing; both DeGiro exports are required")
 
-    candidates = detect(parse_transactions_csv(transactions_path), parse_account_csv(account_path))
+    trades = parse_transactions_csv(transactions_path)
+    account = parse_account_csv(account_path)
+
+    candidates = detect(trades, account)
     resolutions = load_resolutions(resolutions_path)
 
     # Written before the refusal, not after: the operator answers the questions in
@@ -247,10 +282,13 @@ def import_degiro_export(
     if unresolved:
         raise QuarantineError(unresolved)
 
-    return import_transactions_file(
+    return insert_rows(
         engine,
-        transactions_path,
         account_id,
+        [*trades, *normalise_account_rows(account)],
+        filename=f"{TRANSACTIONS_FILENAME}+{ACCOUNT_FILENAME}",
+        file_sha256=_sha256(transactions_path, account_path),
+        parser_version=f"{PARSER_VERSION}+{ACCOUNT_PARSER_VERSION}",
         suppressed=_suppression_notes(candidates, resolutions),
     )
 
