@@ -124,3 +124,71 @@ def parse_optional_decimal(raw: str) -> Decimal | None:
 
 def parse_dutch_date(raw: str) -> date:
     return datetime.strptime(raw.strip(), "%d-%m-%Y").date()
+
+
+class AcctCol:
+    """Verified positional indices for Account.csv.
+
+    The header names 12 fields but leaves two of them blank, and the blanks sit on
+    the wrong side of the amounts they belong to. The data is really
+    `date, time, value_date, product, isin, description, fx, change_ccy, change,
+    balance_ccy, balance, order_id` -- a currency column precedes each amount, while
+    the header reads `...,FX,Change,,Balance,,Order Id`. Mapping by name would put
+    the currency where the amount belongs on every single row.
+    """
+
+    DATE = 0
+    TIME = 1
+    VALUE_DATE = 2
+    PRODUCT = 3
+    ISIN = 4
+    DESCRIPTION = 5
+    FX = 6
+    CHANGE_CCY = 7
+    CHANGE = 8
+    BALANCE_CCY = 9
+    BALANCE = 10
+    ORDER_ID = 11
+
+
+# Same fields, same order, with the two unnamed currency columns given the name of
+# the amount they precede -- so `raw_json` keeps all twelve instead of silently
+# collapsing the two blanks into a single key.
+ACCOUNT_RAW_FIELDS: tuple[str, ...] = (
+    "Date",
+    "Time",
+    "Value date",
+    "Product",
+    "ISIN",
+    "Description",
+    "FX",
+    "Change currency",
+    "Change",
+    "Balance currency",
+    "Balance",
+    "Order Id",
+)
+
+
+class PortCol:
+    """Verified positional indices for Portfolio.csv.
+
+    Same misalignment as the other two files: the header's blank placeholder sits
+    before `Value in EUR` while the data carries `local_value_ccy, local_value,
+    value_eur`. Portfolio.csv is never imported -- it is only a reconciliation
+    target (Sec 6.2) -- so this exists to read the target, not to load anything.
+    """
+
+    PRODUCT = 0
+    ISIN = 1
+    AMOUNT = 2
+    CLOSING = 3
+    LOCAL_CCY = 4
+    LOCAL_VALUE = 5
+    VALUE_EUR = 6
+
+
+#: Portfolio.csv reports one combined cash line covering the DeGiro cash account
+#: AND the flatex (FTX) bank account. That is why the Sec 3.6 cash invariant nets
+#: out the sweep between them: they are two pockets of one pot.
+CASH_ROW_PREFIX = "CASH & CASH FUND"

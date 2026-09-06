@@ -2,6 +2,11 @@
 
 Money crosses the wire as a string. JSON numbers are IEEE doubles, so serialising a
 Decimal as a number reintroduces exactly the drift the storage layer prevents.
+
+Every response envelope inherits `Provenance`, which is what design doc Sec 9.2 means by
+"API response schemas cannot be constructed without method and coverage fields": neither
+field has a default, so Pydantic rejects an envelope that omits them. A convention would
+decay the first time someone was in a hurry; a required field cannot.
 """
 
 from __future__ import annotations
@@ -9,10 +14,33 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, field_serializer
 
 from app.models.ledger import Transaction
+
+#: Which lot-matching method produced the realised figures in a response.
+#: `None` is a real answer, not a missing one: it means no matching was applied,
+#: which is the honest description of a raw ledger listing. Filling it with the
+#: configured default would claim a computation that never ran.
+LotMethod = Literal["FIFO", "LIFO", "HIFO"]
+
+#: How much of the requested data the response could actually account for
+#: (design doc Sec 8.1). Anything short of "full" means the UI must render "no data"
+#: rather than a zero, and aggregates must say how much they cover.
+Coverage = Literal["missing", "partial", "manual", "full"]
+
+
+class Provenance(BaseModel):
+    """What produced these numbers. Inherited by every response envelope.
+
+    Deliberately without defaults. `method=None` still has to be written out at the
+    call site, which forces whoever adds an endpoint to decide what it means there.
+    """
+
+    method: LotMethod | None
+    coverage: Coverage
 
 
 class TransactionOut(BaseModel):
@@ -61,7 +89,7 @@ class TransactionOut(BaseModel):
         )
 
 
-class TransactionPage(BaseModel):
+class TransactionPage(Provenance):
     items: list[TransactionOut]
     total: int
     limit: int

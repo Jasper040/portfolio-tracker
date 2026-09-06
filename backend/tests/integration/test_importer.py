@@ -23,10 +23,10 @@ def test_import_inserts_every_row() -> None:
     engine = _engine()
     account_id = ensure_default_account(engine)
     result = import_transactions_file(engine, GOLDEN, account_id)
-    assert result.rows_parsed == 13
-    assert result.rows_inserted == 13
+    assert result.rows_parsed == 15
+    assert result.rows_inserted == 15
     with Session(engine) as s:
-        assert len(s.exec(select(Transaction)).all()) == 13
+        assert len(s.exec(select(Transaction)).all()) == 15
 
 
 def test_reimporting_the_same_file_changes_nothing() -> None:
@@ -36,9 +36,9 @@ def test_reimporting_the_same_file_changes_nothing() -> None:
     import_transactions_file(engine, GOLDEN, account_id)
     second = import_transactions_file(engine, GOLDEN, account_id)
     assert second.rows_inserted == 0
-    assert second.rows_skipped == 13
+    assert second.rows_skipped == 15
     with Session(engine) as s:
-        assert len(s.exec(select(Transaction)).all()) == 13
+        assert len(s.exec(select(Transaction)).all()) == 15
 
 
 def test_reimporting_a_reordered_export_inserts_nothing(tmp_path: Path) -> None:
@@ -48,7 +48,7 @@ def test_reimporting_a_reordered_export_inserts_nothing(tmp_path: Path) -> None:
     engine = _engine()
     account_id = ensure_default_account(engine)
     first = import_transactions_file(engine, GOLDEN, account_id)
-    assert first.rows_inserted == 13
+    assert first.rows_inserted == 15
 
     lines = GOLDEN.read_text(encoding="utf-8").strip().split("\n")
     header, data_lines = lines[0], lines[1:]
@@ -59,9 +59,9 @@ def test_reimporting_a_reordered_export_inserts_nothing(tmp_path: Path) -> None:
 
     second = import_transactions_file(engine, reordered, account_id)
     assert second.rows_inserted == 0
-    assert second.rows_skipped == 13
+    assert second.rows_skipped == 15
     with Session(engine) as s:
-        assert len(s.exec(select(Transaction)).all()) == 13
+        assert len(s.exec(select(Transaction)).all()) == 15
 
 
 def test_identical_fill_rows_both_survive_import() -> None:
@@ -99,7 +99,7 @@ def test_undo_removes_exactly_one_batch() -> None:
     account_id = ensure_default_account(engine)
     result = import_transactions_file(engine, GOLDEN, account_id)
     removed = undo_batch(engine, result.batch_id)
-    assert removed == 13
+    assert removed == 15
     with Session(engine) as s:
         assert s.exec(select(Transaction)).all() == []
         assert s.exec(select(ImportBatch)).all() == []
@@ -113,7 +113,7 @@ def test_batch_records_the_file_hash() -> None:
         batch = s.get(ImportBatch, result.batch_id)
     assert batch is not None
     assert len(batch.file_sha256) == 64
-    assert batch.row_count == 13
+    assert batch.row_count == 15
 
 
 def test_a_malformed_file_aborts_the_import_leaving_nothing_behind(tmp_path: Path) -> None:

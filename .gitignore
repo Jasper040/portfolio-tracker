@@ -5,6 +5,9 @@
 degiro-export/
 *.degiro.csv
 data/
+# Corporate-action answers (design doc Sec 6.3). A key is ISIN:date:amount --
+# a holding and its size. The committed .example.yaml documents the format.
+config/corporate_actions.yaml
 *.sqlite
 *.sqlite3
 *.db
@@ -42,3 +45,6 @@ Thumbs.db
 
 # SDD scratch workspace (git-ignored)
 .superpowers/
+
+# Local scratch (runbook uses it to stage the golden files as an export dir)
+.scratch/

@@ -22,6 +22,7 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import astuple, dataclass
+from typing import TypeVar
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,9 +34,37 @@ class RefInput:
     price: str
 
 
-def assign_source_refs(inputs: Sequence[RefInput]) -> list[str]:
+@dataclass(frozen=True, slots=True)
+class AccountRefInput:
+    """What identifies a cash-book row.
+
+    Account.csv has no order id on most rows and no quantity or price on any, so
+    the description is doing the work an instrument and a size do in a trade: it is
+    the only thing separating a dividend from the withholding booked beside it, at
+    the same minute, against the same ISIN.
+
+    `kind` is a constant. Both files feed one `UNIQUE(source, source_ref)`
+    constraint, and a collision there does not raise -- the importer skips a ref it
+    has already seen, so a trade and a cash row that hashed alike would silently
+    lose one of the two. Six fields versus five is already enough to keep the
+    length-prefixed encodings apart, but relying on that is relying on an argument
+    a future field could quietly invalidate.
+    """
+
+    kind: str
+    trade_datetime: str
+    isin: str
+    description: str
+    change: str
+    currency: str
+
+
+_Ref = TypeVar("_Ref", RefInput, AccountRefInput)
+
+
+def assign_source_refs(inputs: Sequence[_Ref]) -> list[str]:
     order = sorted(range(len(inputs)), key=lambda i: astuple(inputs[i]))
-    seen: dict[RefInput, int] = defaultdict(int)
+    seen: dict[_Ref, int] = defaultdict(int)
     refs: list[str] = [""] * len(inputs)
     for i in order:
         row = inputs[i]
@@ -45,7 +74,7 @@ def assign_source_refs(inputs: Sequence[RefInput]) -> list[str]:
     return refs
 
 
-def _payload(row: RefInput, ordinal: int) -> str:
+def _payload(row: RefInput | AccountRefInput, ordinal: int) -> str:
     """Length-prefix every field so the encoding is injective.
 
     A plain "|".join is not. RefInput(order_ref="X|Y", trade_datetime="T", ...) and

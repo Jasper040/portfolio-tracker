@@ -55,4 +55,10 @@ def list_transactions(
         total=total,
         limit=limit,
         offset=offset,
+        # No lot matching happens here -- these are ledger rows exactly as imported,
+        # so there is no method to report. Coverage is "full" because every row is
+        # broker truth; nothing on this endpoint depends on an external series that
+        # could be missing.
+        method=None,
+        coverage="full",
     )

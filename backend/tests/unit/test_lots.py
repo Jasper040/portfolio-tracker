@@ -1,0 +1,190 @@
+"""Lot matching, ported from the tested TypeScript implementation with two upgrades:
+Decimal instead of float, and fee attribution routed through `apportion` so
+`Σ attributed fees == Σ ledger fees` holds exactly (design doc Sec 11.2).
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+
+import pytest
+
+from app.domain.lots import LotTransaction, match_lots
+
+D = Decimal
+
+
+def buy(ref: str, quantity: str, price: str, fees: str = "0.00", day: int = 1) -> LotTransaction:
+    return LotTransaction(
+        id=ref,
+        trade_date=date(2020, 1, day),
+        side="BUY",
+        quantity=D(quantity),
+        price=D(price),
+        fees=D(fees),
+    )
+
+
+def sell(ref: str, quantity: str, price: str, fees: str = "0.00", day: int = 1) -> LotTransaction:
+    return LotTransaction(
+        id=ref,
+        trade_date=date(2024, 1, day),
+        side="SELL",
+        quantity=D(quantity),
+        price=D(price),
+        fees=D(fees),
+    )
+
+
+class TestTheThreeMethodsDisagree:
+    """Three lots at 20, 30 and 10 and one sale at 40, so every method picks a
+    different lot. Two methods aliasing would pass any weaker fixture."""
+
+    TRANSACTIONS = [
+        buy("1", "10", "20", day=1),
+        buy("2", "10", "30", day=2),
+        buy("3", "10", "10", day=3),
+        sell("4", "10", "40"),
+    ]
+
+    def test_fifo_closes_the_oldest_lot(self) -> None:
+        assert match_lots(self.TRANSACTIONS, "FIFO").realised == D("200")
+
+    def test_lifo_closes_the_newest_lot(self) -> None:
+        assert match_lots(self.TRANSACTIONS, "LIFO").realised == D("300")
+
+    def test_hifo_closes_the_dearest_lot_realising_the_smallest_gain(self) -> None:
+        assert match_lots(self.TRANSACTIONS, "HIFO").realised == D("100")
+
+    @pytest.mark.parametrize("method", ["FIFO", "LIFO", "HIFO"])
+    def test_the_method_never_changes_how_much_stock_is_left(self, method: str) -> None:
+        # The method decides WHICH cost basis is consumed, never the quantity. A
+        # method that changed the quantity would be a bug, not a policy.
+        assert match_lots(self.TRANSACTIONS, method).quantity == D("20")  # type: ignore[arg-type]
+
+    def test_the_remaining_cost_basis_differs_per_method(self) -> None:
+        assert match_lots(self.TRANSACTIONS, "FIFO").cost == D("400")  # 30 and 10 remain
+        assert match_lots(self.TRANSACTIONS, "LIFO").cost == D("500")  # 20 and 30 remain
+
+
+class TestFeeAttribution:
+    def test_pro_rates_both_legs_by_each_side_own_quantity(self) -> None:
+        # Buy 10 @ 10 costing 2.00; sell 5 @ 20 costing 4.00.
+        # Sale leg: all 4.00, since this closure is the whole sale.
+        # Buy leg: 2.00 x 5/10 = 1.00. Total 5.00.
+        result = match_lots([buy("1", "10", "10", "2.00"), sell("2", "5", "20", "4.00")], "FIFO")
+        assert len(result.closures) == 1
+        assert result.closures[0].fees == D("5.00")
+        assert result.closures[0].pnl == D("45.00")
+
+    def test_charges_a_purchase_fee_once_across_tranches(self) -> None:
+        result = match_lots(
+            [
+                buy("1", "10", "10", "2.00"),
+                sell("2", "5", "20", "0.00", day=1),
+                sell("3", "5", "20", "0.00", day=2),
+            ],
+            "FIFO",
+        )
+        assert len(result.closures) == 2
+        assert sum(c.fees for c in result.closures) == D("2.00")
+
+    def test_leaves_the_open_lot_only_its_share(self) -> None:
+        result = match_lots([buy("1", "10", "10", "2.00"), sell("2", "5", "20")], "FIFO")
+        assert result.open_lots[0].fees == D("1.00")
+        assert result.cost == D("51.00")
+
+    @pytest.mark.parametrize(
+        "transactions",
+        [
+            [buy("1", "3", "10", "0.10"), sell("2", "1", "20"), sell("3", "2", "20")],
+            [
+                buy("1", "7", "10", "2.00"),
+                buy("2", "3", "12", "1.00"),
+                sell("3", "9", "20", "3.00"),
+            ],
+            [buy("1", "1", "10", "0.01"), sell("2", "1", "20", "0.01")],
+        ],
+    )
+    def test_attributed_fees_always_equal_ledger_fees(
+        self, transactions: list[LotTransaction]
+    ) -> None:
+        """The standing invariant from Sec 11.2, checked on splits that do not divide."""
+        result = match_lots(transactions, "FIFO")
+        attributed = sum(c.fees for c in result.closures) + sum(
+            lot.fees for lot in result.open_lots
+        )
+        assert attributed == sum(t.fees for t in transactions)
+
+
+class TestEdges:
+    def test_splits_one_sale_across_every_lot_it_consumes(self) -> None:
+        result = match_lots(
+            [buy("1", "5", "10", day=1), buy("2", "5", "20", day=2), sell("3", "8", "30")], "FIFO"
+        )
+        assert [c.quantity for c in result.closures] == [D("5"), D("3")]
+        assert result.quantity == D("2")
+
+    def test_terminates_and_drops_the_excess_when_overselling(self) -> None:
+        # Shorts are not modelled. A hang here is the failure this test exists for.
+        result = match_lots([buy("1", "5", "10"), sell("2", "10", "30")], "FIFO")
+        assert len(result.closures) == 1
+        assert result.closures[0].quantity == D("5")
+        assert result.quantity == D("0")
+
+    def test_a_fully_consumed_lot_leaves_nothing_open(self) -> None:
+        # Decimal is exact, so this is 0 rather than 1e-17 -- no epsilon needed.
+        result = match_lots(
+            [buy("1", "0.3", "10"), sell("2", "0.1", "20", day=1), sell("3", "0.2", "20", day=2)],
+            "FIFO",
+        )
+        assert result.open_lots == []
+        assert result.quantity == D("0")
+
+    def test_reports_nothing_realised_without_a_sale(self) -> None:
+        result = match_lots([buy("1", "10", "10", "1.00")], "FIFO")
+        assert result.realised == D("0")
+        assert result.closures == []
+        assert result.cost == D("101.00")
+
+    def test_rejects_transactions_out_of_chronological_order(self) -> None:
+        # A SELL cannot match a BUY it has not seen. Silently mismatching would
+        # produce a plausible, wrong cost basis.
+        with pytest.raises(ValueError):
+            match_lots([sell("1", "5", "20", day=2), buy("2", "5", "10", day=1)], "FIFO")
+
+
+class TestClosureMetrics:
+    """Sec 7.1: each closure carries holding days, P&L, % return and annualised return."""
+
+    def test_reports_holding_days_and_percentage_return(self) -> None:
+        result = match_lots([buy("1", "10", "10"), sell("2", "10", "12")], "FIFO")
+        closure = result.closures[0]
+        assert closure.holding_days == (date(2024, 1, 1) - date(2020, 1, 1)).days
+        assert closure.return_pct == D("0.2")
+
+    def test_annualises_over_the_holding_period(self) -> None:
+        result = match_lots([buy("1", "10", "10"), sell("2", "10", "12")], "FIFO")
+        annualised = result.closures[0].annualised_return
+        assert annualised is not None
+        # 20% over roughly four years is a few percent a year, not 20.
+        assert D("0.04") < annualised < D("0.05")
+
+    def test_declines_to_annualise_a_same_day_round_trip(self) -> None:
+        result = match_lots(
+            [
+                LotTransaction("1", date(2024, 1, 1), "BUY", D("10"), D("10"), D("0")),
+                LotTransaction("2", date(2024, 1, 1), "SELL", D("10"), D("11"), D("0")),
+            ],
+            "FIFO",
+        )
+        assert result.closures[0].holding_days == 0
+        assert result.closures[0].annualised_return is None
+
+    def test_declines_to_annualise_a_total_loss(self) -> None:
+        # A -100% return has no real annualised equivalent; reporting one would
+        # require a root of a negative number.
+        result = match_lots([buy("1", "10", "10"), sell("2", "10", "0")], "FIFO")
+        assert result.closures[0].return_pct == D("-1")
+        assert result.closures[0].annualised_return is None

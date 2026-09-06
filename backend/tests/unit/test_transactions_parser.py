@@ -15,7 +15,7 @@ def rows() -> list:
 
 
 def test_parses_every_data_row(rows: list) -> None:
-    assert len(rows) == 13
+    assert len(rows) == 15
 
 
 def test_quoted_product_name_with_a_comma_survives(rows: list) -> None:

@@ -1,0 +1,317 @@
+"""Parser for DeGiro's Account.csv (the cash book).
+
+`Transactions.csv` is authoritative for trades; this file is authoritative for
+everything else (design doc Sec 6.2). It is also the only place corporate actions
+are named (Sec 3.4) and the only place the genuine deposits and withdrawals can be
+told apart from internal transfers (Sec 3.3).
+
+That last point is why this is the highest-risk parser in the project. 254 of 785
+rows look exactly like external cash flows and are not: DeGiro's own sweep between
+the investment account and the flatex bank account, and iDEAL reservation pairs.
+They carry real signed euro amounts and plausible running balances, so nothing in
+the numbers distinguishes them -- only the description does. Book them as deposits
+and MWR becomes meaningless while TWR's sub-period boundaries fragment into noise.
+
+The mirror-image error is just as costly and was live until the Sec 3.6 cash
+invariant caught it: the three flatex transfer rows LOOK like another internal pair
+and are not, netting EUR -8000.00 of real movement. Dropping a group because it
+appears to offset is only safe when it actually does, so those are kept and typed
+by the sign of the amount.
+
+Classification is therefore prefix-based on free text, which brings its own trap:
+`Dividendbelasting` starts with `Dividend`. Rules are ordered most-specific-first
+and an unrecognised description is neither kept nor silently dropped -- it is
+flagged, because Sec 3.4 notes DeGiro has already changed its wording once.
+"""
+
+from __future__ import annotations
+
+import csv
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+
+from app.ingest.base import NormalisedRow
+from app.ingest.degiro.dialect import (
+    ACCOUNT_HEADER,
+    ACCOUNT_RAW_FIELDS,
+    AcctCol,
+    assert_header,
+    parse_dutch_date,
+    parse_optional_decimal,
+)
+from app.ingest.source_ref import AccountRefInput, assign_source_refs
+
+PARSER_VERSION = "degiro-account-1"
+SOURCE = "degiro"
+
+
+class MalformedRow(Exception):
+    """A row could not be parsed. Carries the file and line so it can be found."""
+
+
+@dataclass(frozen=True, slots=True)
+class AccountAction:
+    """What to do with a row, and why.
+
+    `txn_type` is `None` whenever `keep` is False. Carrying a type on a dropped row
+    would invite a later change to import it by accident -- which is precisely the
+    cash-sweep failure this parser exists to prevent.
+    """
+
+    keep: bool
+    txn_type: str | None
+    #: False when no rule matched. Distinguishes "deliberately dropped" from
+    #: "this parser has never seen this wording", which must not look the same.
+    recognised: bool
+    #: True for fees that belong to the portfolio rather than to any lot
+    #: (Sec 6.4: `Aansluitingskosten` is never attributed to a position).
+    portfolio_level: bool = False
+    note: str = ""
+    #: The description does not say which way the money went, so the sign does.
+    #: `classify` resolves this to DEPOSIT or WITHDRAWAL and it is never True on a
+    #: returned action -- an unresolved one reaching the ledger would carry
+    #: `txn_type=None`, which is the shape of a dropped row.
+    sign_typed: bool = False
+
+
+_DROP = "dropped"
+
+#: DeGiro's wording for the two corporate actions it names. Defined here, where
+#: classification owns the vocabulary, and imported by `corporate_actions` rather
+#: than restated there: both docstrings warn that DeGiro has changed a wording
+#: once already, and a change applied to one copy would leave the other matching
+#: nothing while still looking correct.
+SPLIT_PREFIX = "split aanpassing"
+PRODUCT_CHANGE_PREFIX = "productwijziging"
+
+#: Ordered rules, matched by case-insensitive prefix. ORDER IS LOAD-BEARING:
+#: `Dividendbelasting` must be tested before `Dividend`, or 38 withholding rows book
+#: as income and every dividend figure in the app is inflated by the tax withheld.
+#: Matching is case-insensitive because the export mixes Dutch and English and is
+#: inconsistent about capitalisation (`flatex terugstorting` is lowercase in a file
+#: that otherwise title-cases); an unrecognised row is still reported, so robustness
+#: here does not cost visibility.
+_RULES: tuple[tuple[str, AccountAction], ...] = (
+    # --- Withholding before dividend. See above.
+    ("dividendbelasting", AccountAction(True, "DIVIDEND_TAX", True)),
+    ("dividend", AccountAction(True, "DIVIDEND", True)),
+    # --- Trade duplicates. Transactions.csv is authoritative (Sec 6.2), and it
+    #     already carries the per-order commission on one of its fill rows. Importing
+    #     these would double-count both the trade and its fee.
+    ("koop ", AccountAction(False, None, True, note=_DROP)),
+    ("verkoop ", AccountAction(False, None, True, note=_DROP)),
+    ("degiro transactiekosten", AccountAction(False, None, True, note=_DROP)),
+    # --- Fees and taxes that exist only here.
+    ("degiro aansluitingskosten", AccountAction(True, "FEE", True, portfolio_level=True)),
+    ("transactiebelasting frankrijk", AccountAction(True, "TAX", True)),
+    # --- Internal transfers. The Sec 3.3 trap.
+    ("degiro cash sweep transfer", AccountAction(False, None, True, note=_DROP)),
+    ("overboeking naar uw geldrekening", AccountAction(False, None, True, note=_DROP)),
+    ("overboeking van uw geldrekening", AccountAction(False, None, True, note=_DROP)),
+    ("reservation ideal", AccountAction(False, None, True, note=_DROP)),
+    # --- Movements between the account and the owner's own bank. NOT internal.
+    #     The combined EUR cash line covers the DeGiro cash account and the flatex
+    #     bank account as one pot (Sec 3.6), and these cross its boundary: the real
+    #     export nets EUR -8000.00 across the three of them, and the cash invariant
+    #     only reconciles to the broker's stated balance when they are counted.
+    #     Sec 3.2 lists them as a dropped "offsetting internal pair" of 2 rows; the
+    #     file holds 3 and they do not offset. The invariant settles it.
+    #
+    #     Kept by sign rather than by pairing them off. Two of the three DO happen
+    #     to offset in this export, and dropping a group because it nets to zero
+    #     works right up until an export arrives where it does not -- which is
+    #     exactly how the published 2-row pair became 3 rows in the first place.
+    ("processed flatex withdrawal", AccountAction(True, None, True, sign_typed=True)),
+    ("flatex terugstorting", AccountAction(True, None, True, sign_typed=True)),
+    # --- The only genuine external flows in the whole export.
+    ("ideal deposit", AccountAction(True, "DEPOSIT", True)),
+    ("sepa instant terugstorting", AccountAction(True, "WITHDRAWAL", True)),
+    # --- Income and FX.
+    ("valuta creditering", AccountAction(True, "FX_CONVERT", True)),
+    ("valuta debitering", AccountAction(True, "FX_CONVERT", True)),
+    ("flatex interest income", AccountAction(True, "INTEREST", True)),
+    ("rente", AccountAction(True, "INTEREST", True)),
+    ("inkomsten uit securities lending", AccountAction(True, "SECURITIES_LENDING", True)),
+    # --- Corporate actions. The only place they are named (Sec 3.4).
+    (SPLIT_PREFIX, AccountAction(True, "CORPORATE_ACTION", True)),
+    (PRODUCT_CHANGE_PREFIX, AccountAction(True, "CORPORATE_ACTION", True)),
+)
+
+_UNRECOGNISED = AccountAction(keep=False, txn_type=None, recognised=False, note="unrecognised")
+
+
+def classify(description: str, change: Decimal | None) -> AccountAction:
+    """Decide what a description means. Never guesses.
+
+    `change` is required rather than optional because the rules that need it need
+    it absolutely: for a flatex transfer the description says money moved and the
+    sign is the only thing that says which way. Defaulting it would pick a
+    direction, and picking a direction wrong turns a withdrawal into a deposit --
+    the same class of error as the Sec 3.3 sweep trap this parser exists to avoid.
+    """
+    text = description.strip().casefold()
+    for prefix, action in _RULES:
+        if text.startswith(prefix):
+            return _resolve_sign(action, change) if action.sign_typed else action
+    return _UNRECOGNISED
+
+
+def _resolve_sign(action: AccountAction, change: Decimal | None) -> AccountAction:
+    """Turn a direction-less rule into a concrete flow using the amount's sign.
+
+    A zero or absent change is neither: it is reported unrecognised rather than
+    booked as a withdrawal of nothing, because a row that reached a sign-typed
+    rule without an amount is a shape this parser has not been taught.
+    """
+    if change is None or change == 0:
+        return replace(_UNRECOGNISED, note="sign-typed rule with no amount")
+    return replace(
+        action, txn_type="DEPOSIT" if change > 0 else "WITHDRAWAL", sign_typed=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AccountRow:
+    """One Account.csv line, parsed and classified but not yet a ledger row."""
+
+    line_no: int
+    trade_date: date
+    trade_time: str | None
+    value_date: date | None
+    product: str | None
+    isin: str | None
+    description: str
+    fx_rate: Decimal | None
+    change: Decimal | None
+    change_currency: str | None
+    balance: Decimal | None
+    balance_currency: str | None
+    order_ref: str | None
+    action: AccountAction
+    raw: dict[str, str]
+
+
+def _blank_to_none(value: str) -> str | None:
+    stripped = value.strip()
+    return stripped or None
+
+
+def parse_account_csv(path: Path) -> list[AccountRow]:
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        header = next(reader)
+        assert_header(header, ACCOUNT_HEADER, path.name)
+        # Physical line numbers are kept for the same reason as in the transactions
+        # parser: a parse error must name a line you can go and read.
+        numbered = [
+            (line_no, row)
+            for line_no, row in enumerate(reader, start=2)
+            if any(cell.strip() for cell in row)
+        ]
+
+    rows: list[AccountRow] = []
+    for line_no, row in numbered:
+        if len(row) != len(ACCOUNT_RAW_FIELDS):
+            raise MalformedRow(
+                f"{path.name} line {line_no}: expected {len(ACCOUNT_RAW_FIELDS)} "
+                f"columns, got {len(row)}"
+            )
+        try:
+            description = row[AcctCol.DESCRIPTION].strip()
+            rows.append(
+                AccountRow(
+                    line_no=line_no,
+                    trade_date=parse_dutch_date(row[AcctCol.DATE]),
+                    trade_time=_blank_to_none(row[AcctCol.TIME]),
+                    value_date=(
+                        parse_dutch_date(row[AcctCol.VALUE_DATE])
+                        if row[AcctCol.VALUE_DATE].strip()
+                        else None
+                    ),
+                    product=_blank_to_none(row[AcctCol.PRODUCT]),
+                    isin=_blank_to_none(row[AcctCol.ISIN]),
+                    description=description,
+                    fx_rate=parse_optional_decimal(row[AcctCol.FX]),
+                    change=parse_optional_decimal(row[AcctCol.CHANGE]),
+                    change_currency=_blank_to_none(row[AcctCol.CHANGE_CCY]),
+                    balance=parse_optional_decimal(row[AcctCol.BALANCE]),
+                    balance_currency=_blank_to_none(row[AcctCol.BALANCE_CCY]),
+                    order_ref=_blank_to_none(row[AcctCol.ORDER_ID]),
+                    action=classify(description, parse_optional_decimal(row[AcctCol.CHANGE])),
+                    raw=dict(zip(ACCOUNT_RAW_FIELDS, row, strict=True)),
+                )
+            )
+        except MalformedRow:
+            raise
+        except Exception as exc:
+            raise MalformedRow(f"{path.name} line {line_no}: {exc}") from exc
+
+    return rows
+
+
+_ZERO = Decimal("0.00")
+_ACCOUNT_REF_KIND = "degiro-account"
+
+
+def normalise_account_rows(rows: Sequence[AccountRow]) -> list[NormalisedRow]:
+    """Turn classified cash-book rows into ledger rows, dropping what is not real.
+
+    Only `keep` rows survive. The nine dropped kinds in the golden file -- and 256
+    in the real export -- are trade duplicates `Transactions.csv` already owns and
+    internal transfers that never left the account (Sec 3.3).
+
+    `net_base` is euros or nothing. DeGiro books an AUD dividend in AUD and
+    converts on a separate `Valuta Creditering` row, so this row moved no euros;
+    the AUD figure is kept verbatim in `gross_local` beside its currency. Copying
+    it into a euro column would make summing the ledger add AUD to EUR silently,
+    which is worse than a zero that is visibly incomplete.
+
+    `fee_base` and `tax_base` stay zero even on a `FEE` or `DIVIDEND_TAX` row: here
+    the amount IS the transaction, and duplicating it into a component column would
+    double it in any total that adds the two. Sec 6.4's per-lot fee attribution
+    reads the trade file, where a fee really is a component of a larger amount.
+
+    All `FEE` rows from this file are portfolio-level by construction -- the only
+    rule producing one is `Aansluitingskosten`, which Sec 6.4 says is never
+    attributed to a lot -- so the distinction survives as the type plus the source.
+    """
+    kept = [row for row in rows if row.action.keep and row.action.txn_type]
+    refs = assign_source_refs(
+        [
+            AccountRefInput(
+                kind=_ACCOUNT_REF_KIND,
+                trade_datetime=f"{row.raw['Date'].strip()}T{row.raw['Time'].strip()}",
+                isin=row.isin or "",
+                description=row.description,
+                change=row.raw["Change"].strip(),
+                currency=row.change_currency or "",
+            )
+            for row in kept
+        ]
+    )
+
+    return [
+        NormalisedRow(
+            source=SOURCE,
+            source_ref=ref,
+            # `kept` is filtered on a truthy txn_type above, so this is never None.
+            txn_type=str(row.action.txn_type),
+            trade_date=row.trade_date,
+            trade_time=row.trade_time,
+            settle_date=row.value_date,
+            net_base=(row.change or _ZERO) if row.change_currency == "EUR" else _ZERO,
+            fee_base=_ZERO,
+            tax_base=_ZERO,
+            isin=row.isin,
+            product_name=row.product,
+            gross_local=row.change,
+            currency_local=row.change_currency,
+            fx_rate=row.fx_rate,
+            order_ref=row.order_ref,
+            raw=row.raw,
+        )
+        for row, ref in zip(kept, refs, strict=True)
+    ]

@@ -1,0 +1,141 @@
+import { describe, expect, it } from "vitest";
+import {
+  costColor,
+  daysBetween,
+  decimal,
+  decimalEur,
+  decimalIsNegative,
+  eur,
+  eurCompact,
+  eurSigned,
+  num,
+  pct,
+  pctPlain,
+  shortDate,
+  signColor,
+} from "./format";
+
+/** U+2212 MINUS, not a hyphen. Spelled out so a failure message shows which one
+ *  actually came back rather than two visually identical strings. */
+const MINUS = "−";
+
+describe("decimal — the ledger path", () => {
+  it("never rounds, however many decimals are asked for", () => {
+    // The whole reason this function exists. Rounding here would make the screen
+    // disagree with the ledger for a reason the reader could not see.
+    expect(decimal("1.239", 2)).toBe("1,239");
+    expect(decimal("0.005", 2)).toBe("0,005");
+    expect(decimal("99.999999", 2)).toBe("99,999999");
+  });
+
+  it("preserves trailing zeros exactly as stored", () => {
+    expect(decimal("12.3400")).toBe("12,3400");
+    expect(decimal("1.0000")).toBe("1,0000");
+  });
+
+  it("pads up to minDecimals, which is lossless", () => {
+    expect(decimal("5", 2)).toBe("5,00");
+    expect(decimal("0.5", 2)).toBe("0,50");
+  });
+
+  it("groups thousands with a dot and separates decimals with a comma", () => {
+    expect(decimal("1234.5", 2)).toBe("1.234,50");
+    expect(decimal("1000000", 0)).toBe("1.000.000");
+    expect(decimal("999", 0)).toBe("999");
+  });
+
+  it("renders a negative with a typographic minus", () => {
+    expect(decimal("-93.14", 2)).toBe(`${MINUS}93,14`);
+  });
+
+  it("strips leading zeros without eating the last one", () => {
+    expect(decimal("007", 0)).toBe("7");
+    expect(decimal("0", 2)).toBe("0,00");
+  });
+
+  it("renders absent values as an em dash", () => {
+    expect(decimal(null)).toBe("—");
+    expect(decimal(undefined)).toBe("—");
+    expect(decimal("")).toBe("—");
+    expect(decimal("   ")).toBe("—");
+  });
+
+  it("returns anything that is not a plain decimal untouched", () => {
+    // Showing the raw value is far more debuggable than showing a confidently
+    // wrong number if the backend ever sends something unexpected.
+    expect(decimal("1.2.3")).toBe("1.2.3");
+    expect(decimal("1e5")).toBe("1e5");
+    expect(decimal("abc")).toBe("abc");
+  });
+
+  it("adds the currency mark without touching the digits", () => {
+    expect(decimalEur("1234.5")).toBe("€ 1.234,50");
+    expect(decimalEur(null)).toBe("—");
+  });
+
+  it("detects sign without parsing", () => {
+    expect(decimalIsNegative("-0.01")).toBe(true);
+    expect(decimalIsNegative("0.01")).toBe(false);
+    expect(decimalIsNegative(null)).toBe(false);
+  });
+});
+
+describe("computed-value formatting", () => {
+  it("formats euros in the Dutch convention", () => {
+    expect(eur(1234.5)).toBe("€ 1.234,50");
+    expect(eur(1234.5, 0)).toBe("€ 1.235");
+    expect(num(0.5, 1)).toBe("0,5");
+  });
+
+  it("compacts at thousand and million boundaries", () => {
+    expect(eurCompact(999)).toBe("€ 999");
+    expect(eurCompact(1234)).toBe("€ 1,2k");
+    expect(eurCompact(1_500_000)).toBe("€ 1,50M");
+    expect(eurCompact(-1234)).toBe(`${MINUS}€ 1,2k`);
+  });
+
+  it("always shows a sign, so a column stays aligned on it", () => {
+    expect(eurSigned(0)).toBe("+€ 0");
+    expect(eurSigned(-45.6, 2)).toBe(`${MINUS}€ 45,60`);
+    expect(pct(0.153)).toBe("+15,3%");
+    expect(pct(-0.05)).toBe(`${MINUS}5,0%`);
+  });
+
+  it("leaves shares and weights unsigned", () => {
+    expect(pctPlain(0.153)).toBe("15,3%");
+  });
+
+  it("returns an em dash for non-finite input rather than NaN", () => {
+    expect(num(NaN)).toBe("—");
+    expect(pct(Infinity)).toBe("—");
+  });
+});
+
+describe("sign colours", () => {
+  it("paints gains green and losses red", () => {
+    expect(signColor(1)).toBe("#3FB950");
+    expect(signColor(-1)).toBe("#E5534B");
+    expect(signColor(0)).toBe("#8A9199");
+  });
+
+  it("inverts for counterfactual deltas, where positive means the sale cost money", () => {
+    // Painting a positive delta green because it is positive would invert the
+    // meaning of the most important number on the What-If screen.
+    expect(costColor(1)).toBe("#E5534B");
+    expect(costColor(-1)).toBe("#3FB950");
+    expect(costColor(1)).not.toBe(signColor(1));
+  });
+});
+
+describe("dates", () => {
+  it("renders ISO as the dd-mm-yy DeGiro prints", () => {
+    expect(shortDate("2026-09-04")).toBe("04-09-26");
+  });
+
+  it("counts whole days across a DST boundary", () => {
+    // Europe/Amsterdam springs forward on 2026-03-29. Local-time parsing would
+    // make this 1 day and 23 hours, and round to 1.
+    expect(daysBetween("2026-03-28", "2026-03-30")).toBe(2);
+    expect(daysBetween("2025-01-01", "2026-01-01")).toBe(365);
+  });
+});
