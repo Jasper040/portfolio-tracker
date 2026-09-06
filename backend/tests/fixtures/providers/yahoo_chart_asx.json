@@ -1,0 +1,22 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "AUD",
+          "symbol": "EXB.AX",
+          "exchangeName": "ASX",
+          "exchangeTimezoneName": "Australia/Sydney",
+          "gmtoffset": 39600,
+          "regularMarketPrice": 0.4
+        },
+        "timestamp": [1736118000],
+        "indicators": {
+          "quote": [{ "close": [0.4] }],
+          "adjclose": [{ "adjclose": [0.4] }]
+        }
+      }
+    ],
+    "error": null
+  }
+}
