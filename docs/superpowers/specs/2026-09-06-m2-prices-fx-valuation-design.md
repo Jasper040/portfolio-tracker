@@ -43,6 +43,11 @@ Confirmed by the owner on 2026-09-06.
 | M2-3 | Every weekday is valued. Where a venue was shut the last close is carried forward and the day records how stale it is. No holes in the chart, no silent inference. |
 | M2-4 | Portfolio value is **net**: holdings at market plus cash, so a debit balance reduces it. Cash is reported as its own component. |
 | M2-5 | `rebuild()` gains `position_daily` and `cash_daily` but **not** valuation. Prices are a cache, not a derived table. Reasoning in section 4. |
+| M2-6 | **Personal use only.** Yahoo's undocumented endpoint is acceptable on those terms, which closes what was open item 1. Revisit before any publication. |
+| M2-7 | The cache holds a **fixed five years** — one call per instrument, no date arithmetic. The **valuation series starts at the first day a position existed**, so the chart does not open with years of flat zero. Cache depth and chart start are separate concerns. |
+| M2-8 | The value chart lives on the **Positions** screen beside the table. Both go live together, so no screen mixes live and modelled figures. Dashboard stays modelled until M6. |
+| M2-9 | `fetch-prices` is **incremental**, fetching only days the cache lacks, with `--full` to refetch when a provider revises its history. |
+| M2-10 | The symbol-validation band is **±30%** (section 6.2). |
 
 ---
 
@@ -252,6 +257,11 @@ Carry-forward is not separate machinery — it is what "latest on or before" mea
 gap between the price's date and the day being valued is the staleness M2-3 requires to
 be recorded.
 
+The series starts at the first day the ledger holds any position, not at the start of
+the cache (M2-7). The cache reaches further back so a single fetch needs no date
+arithmetic and an older import would already be covered; valuing days on which nothing
+was held would only draw a flat zero and invite the reader to wonder what broke.
+
 ### 7.2 Coverage
 
 §8.1 makes coverage a first-class result. The four values have distinct meanings and
@@ -296,8 +306,8 @@ Two endpoints, both carrying `method` and `coverage` in the envelope, which
 
 Money crosses the wire as a string, as everywhere else.
 
-The three surfaces §10 names: the **value chart** (ECharts, per §9.1), the **positions
-table**, and a **coverage strip**. Points below full coverage render distinctly rather
+The three surfaces §10 names, all on the **Positions** screen per M2-8: the **value
+chart** (ECharts, per §9.1), the **positions table**, and a **coverage strip**. Points below full coverage render distinctly rather
 than as ordinary points, so a stale stretch is visible without consulting a legend —
 the same instinct as the `MODELLED` badge.
 
@@ -329,11 +339,11 @@ Coverage target 80%+, with `domain/` held higher, as §11.3 requires.
 
 ## 10. Open items
 
-1. **Yahoo's endpoint is undocumented.** It is free, keyless and widely relied upon, but
-   it carries no service guarantee and its terms are grey for anything beyond personal
-   use. The chained-provider design means replacing it is a new `PriceProvider` rather
-   than a rewrite, and Finnhub is held in reserve for resolution. Worth revisiting if
-   this project is ever published.
+1. **Yahoo's endpoint is undocumented.** *Settled for now by M2-6: personal use only.*
+   It carries no service guarantee and its terms are grey beyond personal use, so this
+   reopens the moment the project is published. The chained-provider design keeps the
+   cost of that low — replacing it is a new `PriceProvider`, not a rewrite — and
+   Finnhub is held in reserve for resolution.
 2. **Staleness threshold.** Four calendar days absorbs a weekend plus one holiday.
    A venue closing for longer — a national holiday week — would show as `partial`,
    which is arguably correct but has not been observed in the current data.
