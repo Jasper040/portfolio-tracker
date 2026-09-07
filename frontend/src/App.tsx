@@ -18,6 +18,7 @@ import { Benchmarks } from "./screens/Benchmarks";
 import { Dashboard } from "./screens/Dashboard";
 import { Dividends } from "./screens/Dividends";
 import { ImportHealth } from "./screens/ImportHealth";
+import { Instrument } from "./screens/Instrument";
 import { Lots } from "./screens/Lots";
 import { Positions } from "./screens/Positions";
 import { Settings } from "./screens/Settings";
@@ -127,6 +128,7 @@ export default function App() {
               onSelect={setSelectedIsin}
             />
           )}
+          {tab === "instr" && <Instrument method={method} />}
           {tab === "whatif" && <WhatIf data={data} agg={agg} method={method} />}
           {tab === "div" && <Dividends data={data} agg={agg} />}
           {tab === "bm" && <Benchmarks data={data} agg={agg} />}
