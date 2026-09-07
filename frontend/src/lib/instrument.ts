@@ -15,7 +15,7 @@
 
 import type { EChartsOption } from "echarts";
 
-import type { Comparison, InstrumentChart, Marker } from "../api/types";
+import type { Comparison, IndexPoint, InstrumentChart, Marker } from "../api/types";
 import { c } from "./theme";
 
 /** A money or index string to a chart coordinate. `null` stays `null` so the
@@ -70,14 +70,39 @@ function inMarketBand(
   return [{ xAxis: interval.start }, { xAxis: interval.end }];
 }
 
-function benchmarkSeries(comparison: Comparison) {
+/** Projects a total-return index onto a fixed list of dates, by date, never
+ *  by array position.
+ *
+ *  `benchmark_index` comes from a query against the BENCHMARK's own trading
+ *  calendar; `dates` here is the INSTRUMENT's. Divergent market holidays are
+ *  the ordinary case -- nothing guarantees one calendar is a subset of the
+ *  other. The chart's x-axis is given an explicit `data` array (the
+ *  instrument's own dates), so ECharts never collects a new category for a
+ *  date that is not already in that list: handing it a benchmark point on a
+ *  date the axis does not have would make that point disappear silently, with
+ *  no error and no visible gap.
+ *
+ *  Reindexing here first, by date, keeps a benchmark holiday a `null` gap --
+ *  consistent with the price line's own null-not-zero rule -- instead of a
+ *  vanishing point, and guarantees a benchmark date absent from the
+ *  instrument's own calendar cannot shift some other day's value onto the
+ *  wrong x-axis category. */
+function reindexOnDates(
+  dates: readonly string[],
+  index: readonly IndexPoint[],
+): Array<number | null> {
+  const byDate = new Map(index.map((p) => [p.date, toPlotValue(p.index)]));
+  return dates.map((date) => byDate.get(date) ?? null);
+}
+
+function benchmarkSeries(comparison: Comparison, dates: readonly string[]) {
   return {
     name: comparison.benchmark_key,
     type: "line" as const,
     yAxisIndex: 1,
     showSymbol: false,
     connectNulls: false,
-    data: comparison.benchmark_index.map((p) => [p.date, toPlotValue(p.index)]),
+    data: reindexOnDates(dates, comparison.benchmark_index),
     lineStyle: { color: c.neutral, width: 1.5, type: "dashed" as const },
   };
 }
@@ -106,6 +131,8 @@ export function instrumentChartOption(
   chart: InstrumentChart,
   opts: InstrumentChartConfig,
 ): EChartsOption {
+  const dates = chart.points.map((p) => p.date);
+
   const priceSeries = {
     name: chart.isin,
     type: "line" as const,
@@ -130,7 +157,7 @@ export function instrumentChartOption(
     grid: { left: 64, right: 64, top: 16, bottom: 44 },
     xAxis: {
       type: "category",
-      data: chart.points.map((p) => p.date),
+      data: dates,
       axisLine: { lineStyle: { color: c.borderSoft } },
       axisLabel: { color: c.textFaint, fontSize: 10 },
     },
@@ -157,7 +184,9 @@ export function instrumentChartOption(
       // Appended only when both a comparison exists AND the toggle is on --
       // never pushed and left hidden, because a hidden ECharts series still
       // participates in axis scaling and tooltips.
-      ...(opts.showBenchmark && comparison !== null ? [benchmarkSeries(comparison)] : []),
+      ...(opts.showBenchmark && comparison !== null
+        ? [benchmarkSeries(comparison, dates)]
+        : []),
     ],
   };
 }

@@ -46,8 +46,11 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
   return {
     basis: "total_return",
     benchmark_key: "world",
-    instrument_index: [{ date: "2025-01-01", index: "100" }],
-    benchmark_index: [{ date: "2025-01-01", index: "100" }],
+    // Same date as `point()`'s default on purpose: overlap is the default
+    // fixture shape, and a mismatched calendar is something each test that
+    // needs it builds deliberately -- see "benchmark reindexing" below.
+    instrument_index: [{ date: "2025-03-03", index: "100" }],
+    benchmark_index: [{ date: "2025-03-03", index: "100" }],
     intervals: [],
     linked_instrument_return: "0.05",
     linked_benchmark_return: "0.04",
@@ -163,6 +166,68 @@ describe("benchmark toggle", () => {
     const option = instrumentChartOption(c, { showBenchmark: true });
     const series = option.series as Array<Record<string, unknown>>;
     expect(series).toHaveLength(1);
+  });
+});
+
+describe("benchmark reindexing", () => {
+  // The benchmark's own dates come from a separate query against the
+  // BENCHMARK's trading calendar; `chart.points` comes from the
+  // INSTRUMENT's. Divergent market holidays are the ordinary case, not an
+  // edge case, and nothing guarantees one calendar is a subset of the other.
+  //
+  // The x-axis is given an explicit `data` array (the instrument's own
+  // dates), so ECharts never collects a new category for a benchmark date
+  // that is not already in that list -- a plain `[date, value]` pairing
+  // would make that point vanish silently, with no error and no visible
+  // gap. Reindexing the benchmark onto the instrument's own dates first,
+  // by date rather than by array position, keeps a benchmark holiday a
+  // `null` gap instead of a disappearing point.
+
+  it("is exactly as long as the instrument's own points, gapping the dates the benchmark lacks", () => {
+    const c = chart({
+      points: [
+        point({ date: "2025-01-01" }),
+        point({ date: "2025-01-02" }),
+        point({ date: "2025-01-03" }),
+      ],
+      comparison: comparison({
+        // No entry for 2025-01-02: a benchmark holiday on a day the
+        // instrument itself traded.
+        benchmark_index: [
+          { date: "2025-01-01", index: "100" },
+          { date: "2025-01-03", index: "102" },
+        ],
+      }),
+    });
+    const option = instrumentChartOption(c, { showBenchmark: true });
+    const series = option.series as Array<Record<string, unknown>>;
+    const benchmark = series.find((s) => s.name === "world")!;
+    expect(benchmark.data).toEqual([100, null, 102]);
+  });
+
+  it("aligns by date rather than by array position, so an extra benchmark day does not shift later values", () => {
+    const c = chart({
+      // The instrument's own calendar skips 2025-01-02 entirely (a day it
+      // was not traded/priced) -- only two points.
+      points: [point({ date: "2025-01-01" }), point({ date: "2025-01-03" })],
+      comparison: comparison({
+        // The benchmark traded on 2025-01-02 even though the instrument's
+        // own series has no row for it. A naive positional mapping (zip
+        // benchmark_index directly against chart.points) would read this
+        // as [2025-01-01 -> 100, 2025-01-03 -> 150] -- silently handing
+        // 2025-01-03 the value that actually belongs to 2025-01-02.
+        benchmark_index: [
+          { date: "2025-01-01", index: "100" },
+          { date: "2025-01-02", index: "150" },
+          { date: "2025-01-03", index: "200" },
+        ],
+      }),
+    });
+    const option = instrumentChartOption(c, { showBenchmark: true });
+    const series = option.series as Array<Record<string, unknown>>;
+    const benchmark = series.find((s) => s.name === "world")!;
+    // Correct-by-date: 2025-01-03 gets its OWN value, not 2025-01-02's.
+    expect(benchmark.data).toEqual([100, 200]);
   });
 });
 
