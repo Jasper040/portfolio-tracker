@@ -12,7 +12,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy import Engine
 
-from app.analytics.valuation import current_positions
+from app.analytics.positions_snapshot import current_positions
 from app.api.routes_transactions import get_engine
 from app.api.schemas import LotMethod, PositionOut, PositionsOut
 

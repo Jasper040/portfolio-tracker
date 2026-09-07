@@ -191,7 +191,10 @@ def test_the_read_side_modules_exist_so_this_is_not_vacuous() -> None:
     modules = _read_side_modules()
     assert modules
     assert any(path.name == "valuation.py" for path in modules)
+    assert any(path.name == "prices.py" for path in modules)
     assert any(path.name == "total_return.py" for path in modules)
+    assert any(path.name == "instrument_price.py" for path in modules)
+    assert any(path.name == "instrument_return.py" for path in modules)
 
 def test_the_exempt_set_names_files_that_actually_exist() -> None:
     """An exemption for a deleted file is a hole nobody would notice: it would
@@ -217,9 +220,23 @@ def test_no_read_side_module_names_both_closes() -> None:
         "a dividend gets counted twice: " + ", ".join(both)
     )
 
-def test_valuation_reads_only_the_unadjusted_close() -> None:
-    names = _identifiers(APP / "analytics" / "valuation.py")
+def test_the_price_reader_reads_only_the_unadjusted_close() -> None:
+    """Was `test_valuation_reads_only_the_unadjusted_close` until M3 split
+    `valuation.py`. Re-pointed rather than deleted, and deliberately so: after
+    the split `valuation.py` names neither column, so the old assertion would
+    still have passed -- vacuously, having quietly lost the half that checks the
+    column is present SOMEWHERE. An assertion that passes for a new reason is
+    not the same assertion."""
+    names = _identifiers(APP / "analytics" / "prices.py")
     assert UNADJUSTED in names
+    assert ADJUSTED not in names
+
+
+def test_valuation_no_longer_names_a_close_column_directly() -> None:
+    """It reads through `prices.py` now. Asserted so a future edit that inlines
+    a column read back into `valuation.py` has to argue with a test."""
+    names = _identifiers(APP / "analytics" / "valuation.py")
+    assert UNADJUSTED not in names
     assert ADJUSTED not in names
 
 def test_total_return_reads_only_the_adjusted_close() -> None:
@@ -235,3 +252,31 @@ def test_the_valuation_endpoints_cannot_reach_the_total_return_module() -> None:
 
 def test_the_total_return_module_does_not_reach_valuation() -> None:
     assert "app.analytics.valuation" not in _reachable_from("app.analytics.total_return")
+
+
+def test_the_instrument_price_module_cannot_reach_the_adjusted_close() -> None:
+    """The call-path half for M3. Two modules that each name one column would
+    still double-count if one could call the other."""
+    reachable = _reachable_from("app.analytics.instrument_price")
+    assert "app.analytics.total_return" not in reachable
+
+
+def test_the_instrument_return_module_cannot_reach_the_unadjusted_close() -> None:
+    """The direction that is easy to breach by accident: `instrument_return`
+    legitimately imports `quotes` for FX, and if the unadjusted readers had
+    stayed in that file this assertion would fail. That is why M3 split
+    `quotes.py` from `prices.py` -- see M3 section 5.1."""
+    reachable = _reachable_from("app.analytics.instrument_return")
+    assert "app.analytics.prices" not in reachable
+    assert "app.analytics.valuation" not in reachable
+
+
+def test_the_instrument_route_reaches_both_modules_but_names_neither_column() -> None:
+    """The composition point. It is allowed to reach both -- that is its job --
+    precisely because it computes nothing itself."""
+    reachable = _reachable_from("app.api.routes_instrument")
+    assert "app.analytics.instrument_price" in reachable
+    assert "app.analytics.instrument_return" in reachable
+    names = _identifiers(APP / "api" / "routes_instrument.py")
+    assert UNADJUSTED not in names
+    assert ADJUSTED not in names

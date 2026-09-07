@@ -302,6 +302,64 @@ def first_trade_date() -> date:
     return min(row.trade_date for row in trades())
 
 
+def instrument_with_most_in_market_intervals() -> tuple[str, int]:
+    """The M3 Sec 11.3 scenario's instrument: whichever one crosses from flat
+    into held the most times. WHICH instrument that is is a fact about the
+    owner's export, so it is derived here and never written down.
+
+    Takes no `Engine`, unlike the plan this was transcribed from. The oracle
+    principle this module's docstring states -- read the CSVs directly, never
+    the pipeline's own tables -- makes a database connection pointless here:
+    `position_daily` is the code under test (`instrument_price.py` builds its
+    `held` flag and its `Interval` runs from exactly that table), so counting
+    in-market runs from it would make the oracle agree with the pipeline by
+    construction, and keep agreeing after both broke together. This counts
+    the same thing a completely different way, straight off `trades()`.
+
+    Quantities are summed per (isin, day) first, then walked in date order as
+    a running total. Day-level netting, not trade-level, is what keeps a
+    same-day corporate-action pair (`split()`, `product_change()`) from
+    reading as a spurious exit-and-reentry: a split's sell-old/buy-new legs
+    and a product change's swap both net to a running total that never visits
+    zero when summed per day, exactly as they should for a holding that never
+    actually closed. Summing trade-by-trade instead would make the result
+    depend on which of a same-day pair happened to be recorded first in the
+    CSV -- a fact about file order, not about the holding.
+
+    `held = running > 0`, never `!= 0` -- the same threshold
+    `instrument_price.py` uses, so a short position (should one ever appear)
+    is not counted as "in market" here either.
+
+    Ties are broken by ISIN, ascending, so the result is deterministic without
+    being hand-picked: the CSV's own row order should never decide which
+    instrument gets named in a passing assertion.
+    """
+    by_day: dict[str, dict[date, Decimal]] = {}
+    for row in trades():
+        if not row.isin:
+            continue
+        totals = by_day.setdefault(row.isin, {})
+        totals[row.trade_date] = totals.get(row.trade_date, _ZERO) + row.quantity
+
+    best_isin = ""
+    best_count = -1
+    for isin in sorted(by_day):
+        running = _ZERO
+        held = False
+        count = 0
+        for on in sorted(by_day[isin]):
+            running += by_day[isin][on]
+            now_held = running > _ZERO
+            if now_held and not held:
+                count += 1
+            held = now_held
+        if count > best_count:
+            best_count = count
+            best_isin = isin
+
+    return best_isin, best_count
+
+
 def local_database_url() -> str | None:
     """The operator's own database -- `DATABASE_URL` if set, else `backend/.env`.
 

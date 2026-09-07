@@ -1,0 +1,21 @@
+# The benchmark set (M3 spec section 4.3). TRACKED, unlike every other config
+# file here, because a key below is a slug and names no holding of yours.
+#
+# This file is an ANSWER, not a lookup. The symbol discriminator that guards
+# `instrument_symbols.yaml` cannot run here: it validates a candidate series
+# against the ledger's own executed prices, and a benchmark was never traded,
+# so there is nothing to check it against. Whatever symbol you write is used.
+#
+# Keys must be lowercase slugs. An ISIN-shaped key is refused at load: an ISIN
+# in a tracked file is a holding, and this file is tracked.
+#
+# `ter` is the proxy's total expense ratio in percent per year. It is reported
+# beside the comparison, never subtracted from it -- adjusting would invent a
+# series nobody published. A holding that beats its proxy by less than the TER
+# has not necessarily beaten the index the proxy tracks.
+#
+# world:
+#   symbol: <the symbol your price provider knows>
+#   currency: EUR
+#   name: <a short label you will recognise on the chart legend>
+#   ter: "0.20"

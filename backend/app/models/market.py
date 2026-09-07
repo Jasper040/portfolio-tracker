@@ -96,6 +96,38 @@ class FxDaily(SQLModel, table=True):
     fetched_at: datetime
 
 
+class BenchmarkDaily(SQLModel, table=True):
+    """One benchmark proxy's close on one day.
+
+    Deliberately the same shape as `PriceDaily` minus the ISIN, and on the same
+    (fetched) side of the determinism line: `rebuild()` must never write here.
+
+    The key is a configuration slug -- `world`, not an ISIN -- for the three
+    reasons M3 section 4.1 gives, of which the operative one is that
+    `config/benchmarks.yaml` is tracked and an ISIN in a tracked file is a
+    holding. `ingest/benchmarks.py` refuses an ISIN-shaped key so that stays
+    true.
+
+    Both closes are stored though M3 reads only the adjusted one: the provider
+    returns both in one response, and fetching half of it now to re-fetch the
+    other half later is a request no free provider has reason to keep serving.
+    """
+
+    __tablename__ = "benchmark_daily"
+    __table_args__ = (
+        UniqueConstraint("key", "price_date", name="uq_benchmark_daily_key_date"),
+    )
+
+    id: UUID = Field(primary_key=True)
+    key: str = Field(index=True)
+    price_date: date = Field(index=True)
+    close_unadjusted: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    close_adjusted: Decimal = Field(sa_column=Column(DecimalString(), nullable=False))
+    currency: str
+    source: str
+    fetched_at: datetime
+
+
 class SymbolReview(SQLModel, table=True):
     """The symbol quarantine (M2 spec section 6.3). Deliberately NOT the ledger.
 

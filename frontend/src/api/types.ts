@@ -154,3 +154,100 @@ export interface ClosurePage extends Provenance {
   items: Closure[];
   total: number;
 }
+
+/** One day of the instrument's own price line: the unadjusted close, converted
+ *  to base. `close_base` is `null`, never zero, on a day that could not be
+ *  priced -- a `0` in the plotted series would draw a line to the floor and
+ *  read as "this instrument was worthless that day". Mirrors `PricePointOut`. */
+export interface PricePoint {
+  date: string;
+  close_base: string | null;
+  coverage: Coverage;
+  held: boolean;
+}
+
+/** One held-or-flat run of the price line. Mirrors `IntervalOut`. `price_return`
+ *  is `null` when either end of the run could not be priced. */
+export interface Interval {
+  start: string;
+  end: string;
+  in_market: boolean;
+  price_return: string | null;
+}
+
+/** One executed trade on the line -- never a corporate-action leg. Mirrors
+ *  `MarkerOut`. */
+export interface Marker {
+  date: string;
+  side: string;
+  quantity: string;
+  price: string;
+  fees: string;
+  position_after: string;
+}
+
+/** One day of a total-return index, rebased to 100 at its interval's start.
+ *  Mirrors `IndexPointOut`. */
+export interface IndexPoint {
+  date: string;
+  index: string;
+}
+
+/** One in-market interval's excess return against the benchmark. Mirrors
+ *  `IntervalExcessOut`. `reason` is present exactly when `excess` is `null`. */
+export interface IntervalExcess {
+  start: string;
+  end: string;
+  instrument_return: string | null;
+  benchmark_return: string | null;
+  excess: string | null;
+  reason: string | null;
+}
+
+/** The instrument against one benchmark, both as total-return indices. Mirrors
+ *  `ComparisonOut`. `coverage` is the BENCHMARK's span coverage, not the
+ *  instrument's own. */
+export interface Comparison {
+  basis: string;
+  benchmark_key: string;
+  instrument_index: IndexPoint[];
+  benchmark_index: IndexPoint[];
+  intervals: IntervalExcess[];
+  linked_instrument_return: string | null;
+  linked_benchmark_return: string | null;
+  linked_excess: string | null;
+  coverage: Coverage;
+}
+
+/** One instrument's priced line, with an optional benchmark comparison.
+ *  Mirrors `InstrumentChartOut`. `method` is `null`: share counts and closes
+ *  are method-independent, so the chart is too -- a real answer, not an
+ *  omission, exactly as it is for `ValuationSeries`. */
+export interface InstrumentChart extends Provenance {
+  isin: string;
+  points: PricePoint[];
+  intervals: Interval[];
+  markers: Marker[];
+  /** `null` when no benchmark was requested. Comparison is an overlay, not a
+   *  precondition -- the chart still draws without one. */
+  comparison: Comparison | null;
+}
+
+/** One ISIN this ledger has ever recorded an economic trade for. Mirrors
+ *  `InstrumentSummaryOut`. Enough for a picker to list and label it -- price,
+ *  coverage and holding state belong to `InstrumentChart`, not here. Returned
+ *  for every traded instrument, not only the ones with an open position: a
+ *  fully exited instrument is a real "out of market" case, not one to hide
+ *  from the picker that opens its own chart. */
+export interface InstrumentSummary {
+  isin: string;
+  product_name: string;
+}
+
+/** One configured benchmark. Mirrors `BenchmarkOut`. Never the underlying
+ *  provider symbol -- that is provider trivia the screen has no use for. */
+export interface Benchmark {
+  key: string;
+  name: string;
+  ter: string;
+}

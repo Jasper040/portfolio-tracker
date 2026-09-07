@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     instrument_symbols_path: str = str(_REPO_ROOT / "config" / "instrument_symbols.yaml")
     #: Hand-maintained prices for instruments no provider covers (parent doc Sec 8.2).
     manual_prices_path: str = str(_REPO_ROOT / "config" / "manual_prices.csv")
+    #: The configured benchmark set (M3 section 4.3). Unlike its neighbours this
+    #: file is TRACKED: its keys are slugs, so it names no holding. Absolute for
+    #: the same reason the others are -- the CLI runs from wherever the operator
+    #: happens to be.
+    benchmarks_path: str = str(_REPO_ROOT / "config" / "benchmarks.yaml")
 
     @property
     def cors_origin_list(self) -> list[str]:

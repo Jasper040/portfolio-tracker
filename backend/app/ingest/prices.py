@@ -45,7 +45,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -53,6 +53,7 @@ import httpx
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+from app.ingest.benchmarks import Benchmark
 from app.ingest.symbols import (
     ResolutionReport,
     SymbolAnswer,
@@ -60,13 +61,14 @@ from app.ingest.symbols import (
     write_symbol_review,
 )
 from app.models.ledger import Transaction
-from app.models.market import FxDaily, PriceDaily
+from app.models.market import BenchmarkDaily, FxDaily, PriceDaily
 from app.providers.base import (
     BACKFILL_YEARS,
     FxPoint,
     FxProvider,
     PriceProvider,
     PriceSeries,
+    ProviderError,
     SymbolResolver,
 )
 from app.providers.chain import PriceChain
@@ -328,3 +330,108 @@ def _base_currency(session: Session) -> str:
 
     account = session.exec(select(Account)).first()
     return account.base_currency if account is not None else "EUR"
+
+
+def _newest_benchmark(session: Session, key: str) -> date | None:
+    rows = session.exec(select(BenchmarkDaily).where(BenchmarkDaily.key == key)).all()
+    return max((row.price_date for row in rows), default=None)
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkFetchReport:
+    fetched: tuple[str, ...]
+    #: (key, reason). A configured symbol that returns nothing is the operator's
+    #: answer being wrong, so the reason names the symbol they wrote.
+    failed: tuple[tuple[str, str], ...]
+    rows_written: int
+
+
+def fetch_benchmarks(
+    engine: Engine,
+    provider: PriceProvider,
+    benchmarks: Sequence[Benchmark],
+    *,
+    full: bool = False,
+    today: date,
+) -> BenchmarkFetchReport:
+    """Fill `benchmark_daily`. M3 section 4.4.
+
+    Never raises for a benchmark the provider does not know: unlike an
+    unresolved instrument symbol, there is no question to put to a human that
+    `config/benchmarks.yaml` has not already asked. The caller decides what a
+    failure is worth.
+    """
+    fetched: list[str] = []
+    failed: list[tuple[str, str]] = []
+    written = 0
+
+    for bench in benchmarks:
+        with Session(engine) as session:
+            newest = _newest_benchmark(session, bench.key)
+
+        try:
+            # `series_since` subtracts its own revision overlap before asking the
+            # provider -- pass the raw newest date, exactly as the instrument
+            # phase does, or the overlap is silently doubled.
+            series = (
+                provider.full_series(bench.symbol)
+                if full or newest is None
+                else provider.series_since(bench.symbol, newest)
+            )
+        except ProviderError as exc:
+            failed.append((bench.key, f"{bench.symbol}: {exc}"))
+            continue
+
+        if series is None or not series.points:
+            failed.append(
+                (
+                    bench.key,
+                    f"{bench.symbol}: the price provider returned no series. "
+                    "config/benchmarks.yaml is taken as authoritative, so this is "
+                    "the configured symbol being wrong rather than a question to "
+                    "put to anyone.",
+                )
+            )
+            continue
+
+        with Session(engine) as session:
+            # Upsert, exactly like `_store_prices`: a revised bar within the
+            # overlap window must correct the stored row rather than being
+            # silently discarded, or the overlap the provider pays for buys
+            # nothing.
+            existing = {
+                row.price_date: row
+                for row in session.exec(
+                    select(BenchmarkDaily).where(BenchmarkDaily.key == bench.key)
+                ).all()
+            }
+            fetched_at = datetime.now(tz=UTC)
+            for point in series.points:
+                row = existing.get(point.on)
+                if row is None:
+                    session.add(
+                        BenchmarkDaily(
+                            id=uuid4(),
+                            key=bench.key,
+                            price_date=point.on,
+                            close_unadjusted=point.close_unadjusted,
+                            close_adjusted=point.close_adjusted,
+                            currency=series.currency.upper(),
+                            source=series.source,
+                            fetched_at=fetched_at,
+                        )
+                    )
+                    written += 1
+                else:
+                    row.close_unadjusted = point.close_unadjusted
+                    row.close_adjusted = point.close_adjusted
+                    row.currency = series.currency.upper()
+                    row.source = series.source
+                    row.fetched_at = fetched_at
+                    session.add(row)
+            session.commit()
+        fetched.append(bench.key)
+
+    return BenchmarkFetchReport(
+        fetched=tuple(fetched), failed=tuple(failed), rows_written=written
+    )

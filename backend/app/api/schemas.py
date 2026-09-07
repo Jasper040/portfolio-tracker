@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, field_serializer
 
 from app.models.ledger import Lot, LotClosure, Transaction
+from app.models.types import Coverage
 
 #: Which lot-matching method produced the realised figures in a response.
 #: `None` is a real answer, not a missing one: it means no matching was applied,
@@ -28,8 +29,9 @@ LotMethod = Literal["FIFO", "LIFO", "HIFO"]
 
 #: How much of the requested data the response could actually account for
 #: (design doc Sec 8.1). Anything short of "full" means the UI must render "no data"
-#: rather than a zero, and aggregates must say how much they cover.
-Coverage = Literal["missing", "partial", "manual", "full"]
+#: rather than a zero, and aggregates must say how much they cover. Defined in
+#: `app.models.types` (imported above), not here, so `analytics/` can share the
+#: same Literal without importing the API layer -- see that module for why.
 
 
 class Provenance(BaseModel):
@@ -297,3 +299,169 @@ class PositionsOut(Provenance):
     @field_serializer("total_market_value_base", "total_unrealised_base")
     def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
         return None if value is None else str(value)
+
+
+class PricePointOut(BaseModel):
+    """One day of the instrument's own price line: the unadjusted close,
+    converted to base. `close_base` is `None`, never zero, on a day that could
+    not be priced (Sec 8.1). Maps `InstrumentPricePoint`."""
+
+    date: date
+    close_base: Decimal | None
+    coverage: Coverage
+    held: bool
+
+    @field_serializer("close_base")
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class IntervalOut(BaseModel):
+    """One held-or-flat run of the price line. Maps `Interval`. `price_return`
+    is `None` when either end of the run could not be priced."""
+
+    start: date
+    end: date
+    in_market: bool
+    price_return: Decimal | None
+
+    @field_serializer("price_return")
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class MarkerOut(BaseModel):
+    """One executed trade on the line -- never a corporate-action leg. Maps
+    `Marker`."""
+
+    date: date
+    side: str
+    quantity: Decimal
+    price: Decimal
+    fees: Decimal
+    position_after: Decimal
+
+    @field_serializer("quantity", "price", "fees", "position_after")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class IndexPointOut(BaseModel):
+    """One day of a total-return index, rebased to 100 at its interval's
+    start. Maps `IndexPoint`."""
+
+    date: date
+    index: Decimal
+
+    @field_serializer("index")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class IntervalExcessOut(BaseModel):
+    """One in-market interval's excess return against the benchmark. Maps
+    `IntervalExcess`.
+
+    `reason` is present exactly when `excess` is `None`. The instrument's own
+    span shortfall never reaches a coverage badge -- see `ComparisonOut.coverage`
+    -- so it surfaces only here; dropping this field on the wire would make a
+    real "this figure means nothing" case invisible to the reader again.
+    """
+
+    start: date
+    end: date
+    instrument_return: Decimal | None
+    benchmark_return: Decimal | None
+    excess: Decimal | None
+    reason: str | None
+
+    @field_serializer("instrument_return", "benchmark_return", "excess")
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class ComparisonOut(BaseModel):
+    """The instrument against one benchmark, both as total-return indices.
+    Maps `Comparison`.
+
+    `coverage` is the BENCHMARK's span coverage, not the instrument's own --
+    see `Comparison.coverage`'s docstring for why the two are a different
+    judgement and must not be confused.
+    """
+
+    basis: str
+    benchmark_key: str
+    instrument_index: list[IndexPointOut]
+    benchmark_index: list[IndexPointOut]
+    intervals: list[IntervalExcessOut]
+    linked_instrument_return: Decimal | None
+    linked_benchmark_return: Decimal | None
+    linked_excess: Decimal | None
+    coverage: Coverage
+
+    @field_serializer(
+        "linked_instrument_return", "linked_benchmark_return", "linked_excess"
+    )
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class InstrumentChartOut(Provenance):
+    """One instrument's priced line, with an optional benchmark comparison.
+
+    `method` is `None` here for the same reason it is on `ValuationSeriesOut`:
+    share counts and closes are method-independent, so the chart is too, and
+    filling it with the configured default would claim a computation that
+    never ran.
+    """
+
+    isin: str
+    points: list[PricePointOut]
+    intervals: list[IntervalOut]
+    markers: list[MarkerOut]
+    #: `None` when no `benchmark` was requested. Comparison is an overlay, not
+    #: a precondition -- the chart still draws without one.
+    comparison: ComparisonOut | None
+
+
+class InstrumentSummaryOut(BaseModel):
+    """One ISIN this ledger has ever recorded an economic trade for. Just
+    enough for a picker to list and label it -- anything more (price,
+    coverage, holding state) belongs to the chart endpoint, not here."""
+
+    isin: str
+    product_name: str
+
+
+class InstrumentListOut(Provenance):
+    """Every instrument the ledger has ever traded -- not only the ones with
+    an open position today (M3 Task 9's fix round: a fully exited instrument
+    is the clearest "out of market" case the milestone exists to show, and
+    `/api/positions` cannot surface it).
+
+    `method` is `None` for the same reason it is on `InstrumentChartOut`: this
+    is a distinct-ISIN listing, not a lot-matched figure, so no method ever
+    ran. `coverage` is always `"full"`, for the same reason `/api/transactions`
+    reports it -- every row is broker truth and nothing here depends on an
+    external series that could be missing.
+    """
+
+    items: list[InstrumentSummaryOut]
+
+
+class BenchmarkOut(BaseModel):
+    """One configured benchmark. Never the symbol -- that is provider trivia
+    the screen has no use for, and not sending it is one less thing on the
+    wire."""
+
+    key: str
+    name: str
+    ter: Decimal
+
+    @field_serializer("ter")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+
+class BenchmarkListOut(BaseModel):
+    items: list[BenchmarkOut]

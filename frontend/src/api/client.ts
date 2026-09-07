@@ -1,5 +1,8 @@
 import type {
+  Benchmark,
   ClosurePage,
+  InstrumentChart,
+  InstrumentSummary,
   LotMethodTag,
   LotPage,
   PositionsPage,
@@ -89,4 +92,57 @@ export async function fetchPositions(method: LotMethodTag): Promise<PositionsPag
     throw new Error(`Failed to load positions: ${response.status} ${response.statusText}`);
   }
   return (await response.json()) as PositionsPage;
+}
+
+/** What `range` accepts on `GET /api/instruments/{isin}/chart` -- mirrors the
+ *  backend's `ChartRange` Literal in `routes_instrument.py` exactly, "max"
+ *  included lowercase, so a typo here cannot silently fall through to the
+ *  server's own default instead of raising. */
+export type Range = "1Y" | "3Y" | "5Y" | "max";
+
+export interface InstrumentChartQuery {
+  range: Range;
+  /** `null` omits the query parameter entirely, matching the route's own
+   *  `benchmark: str | None = Query(default=None)` -- no comparison overlay,
+   *  not a comparison against an empty string. */
+  benchmark: string | null;
+}
+
+export async function fetchInstrumentChart(
+  isin: string,
+  opts: InstrumentChartQuery,
+): Promise<InstrumentChart> {
+  const params = new URLSearchParams({ range: opts.range });
+  if (opts.benchmark) params.set("benchmark", opts.benchmark);
+
+  const response = await fetch(`${BASE}/api/instruments/${isin}/chart?${params}`);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to load instrument chart: ${response.status} ${response.statusText}`,
+    );
+  }
+  return (await response.json()) as InstrumentChart;
+}
+
+export async function fetchBenchmarks(): Promise<Benchmark[]> {
+  const response = await fetch(`${BASE}/api/benchmarks`);
+  if (!response.ok) {
+    throw new Error(`Failed to load benchmarks: ${response.status} ${response.statusText}`);
+  }
+  const body = (await response.json()) as { items: Benchmark[] };
+  return body.items;
+}
+
+/** Every instrument the ledger has ever recorded an economic trade for --
+ *  not only the ones with an open position today. Backs the instrument
+ *  picker on `screens/Instrument.tsx`: a fully exited instrument is a real
+ *  "out of market" case M3 exists to show, and `/api/positions` cannot
+ *  surface it. */
+export async function fetchInstruments(): Promise<InstrumentSummary[]> {
+  const response = await fetch(`${BASE}/api/instruments`);
+  if (!response.ok) {
+    throw new Error(`Failed to load instruments: ${response.status} ${response.statusText}`);
+  }
+  const body = (await response.json()) as { items: InstrumentSummary[] };
+  return body.items;
 }

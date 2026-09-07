@@ -25,7 +25,9 @@ import pytest
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.analytics.valuation import MISSING, current_positions, value_series
+from app.analytics.positions_snapshot import current_positions
+from app.analytics.quotes import MISSING
+from app.analytics.valuation import value_series
 from app.db import create_engine_and_tables
 from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
 from app.models.ledger import PositionDaily
