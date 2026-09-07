@@ -67,6 +67,8 @@ function chart(overrides: Partial<InstrumentChart> = {}): InstrumentChart {
     intervals: [interval()],
     markers: [marker()],
     comparison: null,
+    requested_from: "2025-03-03",
+    clamped: false,
     method: null,
     coverage: "full",
     ...overrides,

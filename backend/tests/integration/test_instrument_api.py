@@ -42,6 +42,12 @@ HELD_END = TODAY - timedelta(days=5)
 #: Older than any `1Y` window (365 days) can reach -- the whole point of the
 #: `range=max` test.
 OLD_TRADE = TODAY - timedelta(days=900)
+#: Younger than a `1Y` window, so that window reaches back before the
+#: instrument existed in the ledger at all -- the clamp case.
+RECENT_TRADE = TODAY - timedelta(days=120)
+#: Priced well before it was ever traded. Ordinary: `fetch-prices` backfills
+#: five years for every instrument regardless of when it was bought.
+PRICED_FROM = TODAY - timedelta(days=400)
 
 ISIN = "XX0000000001"  # invented; no holding of anyone's
 NEVER_TRADED = "XX0000000002"  # invented; never appears in any fixture below
@@ -125,6 +131,49 @@ class Seed:
                     fetched_at=FETCHED,
                 )
             )
+            session.commit()
+        return self
+
+    def priced_over(
+        self, start: date, end: date, isin: str = ISIN, *, base: str = "10.00",
+        step: str = "0.05",
+    ) -> "Seed":
+        """A whole rising price series, in ONE transaction.
+
+        `priced` commits per call, which is fine for the handful of days the
+        other fixtures need and far too slow for the multi-year series the
+        range-invariance test below has to have.
+        """
+        with Session(self.engine) as session:
+            for index, day in enumerate(weekdays(start, end)):
+                close = D(base) + D(step) * index
+                session.add(
+                    PriceDaily(
+                        id=uuid4(), isin=isin, price_date=day, close_unadjusted=close,
+                        close_adjusted=close / 2, currency="EUR", source="yahoo",
+                        fetched_at=FETCHED,
+                    )
+                )
+            session.commit()
+        return self
+
+    def benchmarked_over(
+        self, start: date, end: date, key: str, *, base: str = "50.00",
+        step: str = "0.01",
+    ) -> "Seed":
+        """The benchmark's own rising series, growing at a DIFFERENT rate from
+        the instrument's, so the excess is a real non-zero figure rather than
+        an accident of two identical series."""
+        with Session(self.engine) as session:
+            for index, day in enumerate(weekdays(start, end)):
+                close = D(base) + D(step) * index
+                session.add(
+                    BenchmarkDaily(
+                        id=uuid4(), key=key, price_date=day, close_unadjusted=close * 2,
+                        close_adjusted=close, currency="EUR", source="yahoo",
+                        fetched_at=FETCHED,
+                    )
+                )
             session.commit()
         return self
 
@@ -220,6 +269,129 @@ class TestRangeWindow:
         client = _basic_client()
         resp = client.get(f"/api/instruments/{ISIN}/chart?range=10Y")
         assert resp.status_code == 422
+
+
+class TestExcessDoesNotMoveWithTheRangeControl:
+    """M3 section 5.3: "an index rebased at the window edge changes meaning
+    when the reader drags the range control, and a figure that moves when you
+    zoom is not a figure." Section 7 names this property and asks for it at
+    the composed endpoint.
+
+    `test_instrument_return.py`'s
+    `test_widening_the_window_does_not_move_any_excess_figure` is NOT this
+    test: it hands `comparison()` hand-built interval lists, so it proves only
+    that `comparison` anchors correctly GIVEN correct intervals. The bug this
+    class exists for lives one level up -- in whether the route hands it
+    correct intervals at all -- and is invisible from inside either analytics
+    module.
+
+    One instrument, bought 900 days ago and held ever since: the default
+    `range=1Y` window is shorter than the holding, which is the ordinary case
+    for any position older than a year.
+    """
+
+    def _client(self) -> TestClient:
+        engine = create_engine_and_tables("sqlite://")
+        seed = Seed(engine)
+        seed.traded(OLD_TRADE)
+        seed.held_over(OLD_TRADE, HELD_END)
+        seed.priced_over(OLD_TRADE, HELD_END)
+        seed.benchmarked_over(OLD_TRADE, HELD_END, "world")
+        return TestClient(create_app(engine=engine, benchmarks=BENCHMARKS))
+
+    def test_every_excess_figure_is_identical_at_1y_and_max(self) -> None:
+        client = self._client()
+        one_year = client.get(
+            f"/api/instruments/{ISIN}/chart?range=1Y&benchmark=world"
+        ).json()["comparison"]
+        maximum = client.get(
+            f"/api/instruments/{ISIN}/chart?range=max&benchmark=world"
+        ).json()["comparison"]
+
+        assert one_year is not None and maximum is not None
+        assert one_year["intervals"], "no interval to compare"
+        assert [row["excess"] for row in one_year["intervals"]] == [
+            row["excess"] for row in maximum["intervals"]
+        ]
+        assert one_year["linked_excess"] == maximum["linked_excess"]
+
+    def test_the_intervals_themselves_are_anchored_on_the_real_entry(self) -> None:
+        """The mechanism, asserted separately from the symptom: an excess that
+        matched because both windows were wrong the same way would still be
+        wrong. An interval's `start` is the day the position opened, whatever
+        the range control says."""
+        client = self._client()
+        one_year = client.get(
+            f"/api/instruments/{ISIN}/chart?range=1Y&benchmark=world"
+        ).json()
+
+        held = [row for row in one_year["intervals"] if row["in_market"]]
+        assert held, "the holding must produce an in-market interval"
+        assert date.fromisoformat(held[0]["start"]) <= OLD_TRADE + timedelta(days=4)
+
+    def test_the_points_still_follow_the_requested_window(self) -> None:
+        """The other half of the fix: only the POINTS are clipped. A `1Y`
+        request must still draw a year, not the whole holding -- otherwise the
+        range control would do nothing at all."""
+        client = self._client()
+        one_year = client.get(f"/api/instruments/{ISIN}/chart?range=1Y").json()
+        maximum = client.get(f"/api/instruments/{ISIN}/chart?range=max").json()
+
+        assert date.fromisoformat(one_year["points"][0]["date"]) > date.fromisoformat(
+            maximum["points"][0]["date"]
+        )
+
+
+class TestWindowClampedToInception:
+    """A window wider than the instrument's own life is clamped to its first
+    trade, exactly as `analytics/valuation.py` clamps a requested `from` to the
+    ledger's own first day: "a zero portfolio value on a day the account did
+    not exist is a false claim rather than a missing one".
+
+    Unclamped, an instrument first traded 120 days ago drew an eight-month
+    `in_market: false` interval, with a price return attached, for a period the
+    owner had never heard of it -- rendered by the screen identically to a
+    genuine sell-then-rebuy gap.
+    """
+
+    def _client(self) -> TestClient:
+        engine = create_engine_and_tables("sqlite://")
+        seed = Seed(engine)
+        seed.traded(RECENT_TRADE)
+        seed.held_over(RECENT_TRADE, HELD_END)
+        # Priced across the whole `1Y` window, long before the first trade:
+        # without the clamp there is real price data to draw a pre-inception
+        # line from, which is what makes the false interval so convincing.
+        seed.priced_over(PRICED_FROM, HELD_END)
+        return TestClient(create_app(engine=engine, benchmarks=BENCHMARKS))
+
+    def test_no_interval_begins_before_the_instrument_was_first_traded(self) -> None:
+        body = self._client().get(f"/api/instruments/{ISIN}/chart?range=1Y").json()
+        early = [
+            row for row in body["intervals"]
+            if date.fromisoformat(row["start"]) < RECENT_TRADE
+        ]
+        assert not early, f"pre-inception interval(s): {early}"
+
+    def test_no_point_is_drawn_before_the_instrument_was_first_traded(self) -> None:
+        body = self._client().get(f"/api/instruments/{ISIN}/chart?range=1Y").json()
+        assert body["points"]
+        assert date.fromisoformat(body["points"][0]["date"]) >= RECENT_TRADE
+
+    def test_the_envelope_says_what_was_asked_for_and_that_it_was_clamped(self) -> None:
+        """Mirrors `ValuationSeriesOut`'s two fields, for the same reason: the
+        UI can say "you asked for a year and this position is four months old"
+        rather than silently drawing a shorter chart."""
+        body = self._client().get(f"/api/instruments/{ISIN}/chart?range=1Y").json()
+        assert body["clamped"] is True
+        assert date.fromisoformat(body["requested_from"]) < RECENT_TRADE
+
+    def test_a_range_inside_the_holding_is_not_reported_as_clamped(self) -> None:
+        """`max` asks for inception itself, so nothing is clamped -- and the
+        flag must not cry wolf, or the UI's explanation appears on every chart."""
+        body = self._client().get(f"/api/instruments/{ISIN}/chart?range=max").json()
+        assert body["clamped"] is False
+        assert date.fromisoformat(body["requested_from"]) == RECENT_TRADE
 
 
 class TestWindowAnchor:

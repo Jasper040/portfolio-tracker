@@ -422,6 +422,19 @@ class InstrumentChartOut(Provenance):
     #: `None` when no `benchmark` was requested. Comparison is an overlay, not
     #: a precondition -- the chart still draws without one.
     comparison: ComparisonOut | None
+    #: The left edge the `range` control asked for, echoed back. Never `None`
+    #: -- unlike `ValuationSeriesOut.requested_from`, where the caller may omit
+    #: `from` entirely; a range always implies a start date, so `None` here
+    #: would be a fiction rather than a real answer.
+    requested_from: date
+    #: `True` when `requested_from` fell before the instrument's first trade
+    #: and the window was clamped to it. With `requested_from`, this is how the
+    #: UI can say "you asked for a year and this position is four months old"
+    #: instead of drawing eight months of out-of-market line for a period the
+    #: owner had never heard of the instrument -- the same claim
+    #: `ValuationSeriesOut` makes one level up, at the ledger rather than the
+    #: instrument.
+    clamped: bool
 
 
 class InstrumentSummaryOut(BaseModel):

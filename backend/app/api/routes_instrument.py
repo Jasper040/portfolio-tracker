@@ -15,6 +15,27 @@ passes `instrument_price_view(...)`'s own `Interval` tuple straight into
 `comparison(...)`, which accepts it structurally through `HoldingInterval`
 without importing the concrete type.
 
+**The window is applied to the POINTS and never to the INTERVALS.** Both
+analytics modules are correct in isolation and neither knows what a "range
+control" is: `_intervals()` derives its boundaries from whatever points it is
+handed, and `comparison()` faithfully rebases at whatever interval start it is
+told. Composing them by handing `instrument_price_view` the requested window
+made the two correct halves add up to a wrong number -- an in-market run that
+predates the window came back truncated to the window edge, so the excess for
+a 900-day holding moved from 40% to 307% purely by dragging the range from
+`1Y` to `max`, shipped with `coverage: full` and `reason: null`. M3 section
+5.3: "an index rebased at the window edge changes meaning when the reader
+drags the range control, and a figure that moves when you zoom is not a
+figure." So this route asks for the instrument's FULL history, anchored on
+`_earliest_trade_date`, and clips only what is drawn. An interval's `start` is
+therefore always a real entry date, and every excess figure is a property of
+the holding rather than of the viewport.
+
+That clipping is the one thing this route computes, and it is a filter over
+dates rather than a second answer to a priced question -- the coverage badge
+for the clipped points is rolled up with `quotes.worst_coverage`, the same
+single implementation `instrument_price_view` uses, never a second one.
+
 `GET /api/instruments` (M3 Task 9's fix round) also lives here: the list of
 every ISIN this ledger has ever traded, for the frontend's instrument picker.
 It reads `Transaction` directly rather than `/api/positions`'s snapshot on
@@ -36,6 +57,7 @@ from sqlmodel import Session, select
 from app.analytics.instrument_price import instrument_price_view
 from app.analytics.instrument_return import HoldingInterval
 from app.analytics.instrument_return import comparison as compute_comparison
+from app.analytics.quotes import MISSING, worst_coverage
 from app.api.routes_transactions import get_engine
 from app.api.schemas import (
     BenchmarkListOut,
@@ -156,6 +178,8 @@ def _latest_priced_day(engine: Engine, isin: str) -> date | None:
 
 
 def _window(chart_range: str, earliest: date, anchor: date) -> tuple[date, date]:
+    """What the caller ASKED for, before any clamping. `max` is the whole
+    history by definition, so it asks for exactly the inception date."""
     if chart_range == "max":
         return earliest, anchor
     return anchor - timedelta(days=_RANGE_DAYS[chart_range]), anchor
@@ -229,8 +253,23 @@ def get_instrument_chart(
         )
 
     anchor = _latest_priced_day(engine, isin) or earliest
-    start, end = _window(range, earliest, anchor)
-    view = instrument_price_view(engine, isin, start=start, end=end)
+    requested_from, end = _window(range, earliest, anchor)
+    # Clamped to inception, exactly as `analytics/valuation.py` clamps its own
+    # `start` to the ledger's first day: a price line drawn back before the
+    # instrument was ever traded reports an out-of-market stretch, with a
+    # price return attached, for a period the owner had never heard of it --
+    # rendered identically to a genuine sell-then-rebuy gap. A value for a day
+    # the holding did not exist is a false claim, not a missing one.
+    #
+    # `max` rather than a bare assignment: anchoring the view on `earliest`
+    # below already guarantees no earlier point exists, so this states the
+    # invariant that clipping never reaches before inception rather than
+    # relying on the anchor to keep holding it.
+    start = max(requested_from, earliest)
+
+    # The FULL history, never the requested window -- see this module's
+    # docstring. Only `points` and `markers` below are clipped.
+    view = instrument_price_view(engine, isin, start=earliest, end=end)
 
     comparison_out = (
         _comparison_out(engine, isin, benchmark, view.intervals)
@@ -238,13 +277,18 @@ def get_instrument_chart(
         else None
     )
 
+    points = [p for p in view.points if start <= p.on <= end]
+    # Markers too: the chart's x-axis carries only the drawn dates, so a
+    # marker outside them would vanish silently rather than draw off-screen.
+    markers = [m for m in view.markers if start <= m.on <= end]
+
     return InstrumentChartOut(
         isin=view.isin,
         points=[
             PricePointOut(
                 date=p.on, close_base=p.close_base, coverage=p.coverage, held=p.held
             )
-            for p in view.points
+            for p in points
         ],
         intervals=[
             IntervalOut(
@@ -257,11 +301,17 @@ def get_instrument_chart(
                 date=m.on, side=m.side, quantity=m.quantity, price=m.price,
                 fees=m.fees, position_after=m.position_after,
             )
-            for m in view.markers
+            for m in markers
         ],
         comparison=comparison_out,
+        requested_from=requested_from,
+        clamped=requested_from < earliest,
         method=None,
-        coverage=view.coverage,
+        # The badge describes what was DRAWN, so it is rolled up over the
+        # clipped points -- `view.coverage` covers days this response does not
+        # carry. `worst_coverage` is `instrument_price_view`'s own helper, not
+        # a second implementation of the same judgement.
+        coverage=worst_coverage([p.coverage for p in points]) if points else MISSING,
     )
 
 

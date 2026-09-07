@@ -272,6 +272,9 @@ export function Instrument() {
 
   const selected = instruments.find((i) => i.isin === isin);
   const comparison = chart.comparison;
+  //: The left edge actually drawn. When `clamped` is true this IS the
+  //: instrument's first trade, because the route clamps the window to it.
+  const firstDrawnDay = chart.points[0]?.date;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -332,6 +335,19 @@ export function Instrument() {
               in its own component so it cannot read as the same badge above. */}
           {comparison && <BenchmarkSpanBadge coverage={comparison.coverage} />}
         </div>
+        {/* A statement about the QUESTION, not the answer -- the same note
+            `CoverageStrip` puts under the portfolio value chart, and for the
+            same reason: the reader asked for a window longer than this
+            instrument has existed, and the honest reply is everything there is
+            plus a sentence. Without it a four-month-old position at `1Y` looks
+            like a chart that simply starts late. */}
+        {chart.clamped && firstDrawnDay !== undefined && (
+          <div style={{ fontSize: 11, color: c.modelled, marginTop: 8 }}>
+            Asked for {shortDate(chart.requested_from)}; this instrument was first traded{" "}
+            {shortDate(firstDrawnDay)}. Showing everything there is rather than drawing a line for
+            days it was not owned.
+          </div>
+        )}
       </Panel>
 
       <TableFrame>

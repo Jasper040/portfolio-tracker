@@ -92,6 +92,8 @@ function chart(overrides: Partial<InstrumentChart> = {}): InstrumentChart {
     intervals: [{ start: "2025-01-01", end: "2025-02-01", in_market: true, price_return: "0.05" }],
     markers: [],
     comparison: null,
+    requested_from: "2025-01-01",
+    clamped: false,
     ...overrides,
   };
 }
@@ -231,6 +233,28 @@ describe("excess returns", () => {
     const table = screen.getByRole("table");
     expect(within(table).getAllByText("—").length).toBeGreaterThan(0);
     expect(within(table).queryByText("0,00%")).not.toBeInTheDocument();
+  });
+});
+
+describe("a window wider than the instrument's life", () => {
+  it("says the window was clamped instead of just starting the chart late", async () => {
+    serve([instrument()], [], {
+      XX0000000001: chart({ requested_from: "2024-06-01", clamped: true }),
+    });
+    render(<Instrument />);
+
+    expect(await screen.findByText(/Asked for/i)).toBeInTheDocument();
+    expect(screen.getByText(/first traded/i)).toBeInTheDocument();
+  });
+
+  it("says nothing when the requested window fits inside the holding", async () => {
+    serve([instrument()], [], {
+      XX0000000001: chart({ requested_from: "2025-01-01", clamped: false }),
+    });
+    render(<Instrument />);
+
+    await screen.findByRole("table");
+    expect(screen.queryByText(/Asked for/i)).not.toBeInTheDocument();
   });
 });
 
