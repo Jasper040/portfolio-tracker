@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchBenchmarks, fetchInstrumentChart } from "./client";
+import { fetchBenchmarks, fetchInstrumentChart, fetchInstruments } from "./client";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -71,5 +71,31 @@ describe("fetchBenchmarks", () => {
       vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Server Error" }),
     );
     await expect(fetchBenchmarks()).rejects.toThrow(/500/);
+  });
+});
+
+describe("fetchInstruments", () => {
+  it("returns every traded instrument, not only open positions", async () => {
+    stub({
+      items: [
+        { isin: "XX0000000001", product_name: "Example Fund" },
+        { isin: "XX0000000002", product_name: "Closed Fund" },
+      ],
+      method: null,
+      coverage: "full",
+    });
+    const instruments = await fetchInstruments();
+    expect(instruments).toEqual([
+      { isin: "XX0000000001", product_name: "Example Fund" },
+      { isin: "XX0000000002", product_name: "Closed Fund" },
+    ]);
+  });
+
+  it("surfaces a failed response rather than returning an empty list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Server Error" }),
+    );
+    await expect(fetchInstruments()).rejects.toThrow(/500/);
   });
 });

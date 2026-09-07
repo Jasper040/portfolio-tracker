@@ -4,13 +4,15 @@
  *  makes no drawing decisions of its own -- it only decides what to fetch and
  *  how to render what came back.
  *
- *  The instrument picker reads from `fetchPositions`, the same live endpoint
- *  `Positions.tsx` uses, rather than the modelled dataset `StockDetail.tsx`
- *  picks from. That is a real narrowing -- only instruments with an open
- *  position can be charted here, not every instrument the ledger ever saw --
- *  chosen because every other candidate list on this screen (transactions,
- *  lots) would have needed its own dedup pass for one picker, and this repo
- *  already has a live, deduplicated list of ISINs sitting behind one call.
+ *  The instrument picker reads from `fetchInstruments`, not `fetchPositions`.
+ *  That distinction is load-bearing (fix round after the first review): a
+ *  fully exited instrument has no open position, and is exactly the clearest
+ *  "out of market" case this milestone exists to make visible -- narrowing
+ *  the picker to open positions would make that instrument's own showcase
+ *  chart unreachable from the UI even though `/api/instruments/{isin}/chart`
+ *  answers for it perfectly well. `fetchInstruments` is also not the modelled
+ *  dataset `StockDetail.tsx` picks from -- it is a live, already-deduplicated
+ *  endpoint over every economic transaction the ledger has ever recorded.
  *
  *  Two coverages appear on this screen and they are NOT the same judgement.
  *  `chart.coverage` is the instrument's own price series, and reuses
@@ -41,16 +43,15 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 
-import { fetchBenchmarks, fetchInstrumentChart, fetchPositions, type Range } from "../api/client";
+import { fetchBenchmarks, fetchInstrumentChart, fetchInstruments, type Range } from "../api/client";
 import type {
   Benchmark,
   Comparison,
   Coverage,
   Interval,
   InstrumentChart,
+  InstrumentSummary,
   IntervalExcess,
-  LotMethodTag,
-  PositionsPage,
 } from "../api/types";
 import { EChart } from "../components/charts/EChart";
 import { Pill, SegmentedControl } from "../components/ui/Controls";
@@ -149,17 +150,13 @@ function ExcessCell({ row, basis }: { row: IntervalExcess | null; basis: string 
   );
 }
 
-export interface InstrumentProps {
-  method: LotMethodTag;
-}
-
-export function Instrument({ method }: InstrumentProps) {
+export function Instrument() {
   const [range, setRange] = useState<Range>("1Y");
   const [benchmarkKey, setBenchmarkKey] = useState<string | null>(null);
   const [isin, setIsin] = useState<string | null>(null);
 
-  const [positions, setPositions] = useState<PositionsPage | null>(null);
-  const [positionsError, setPositionsError] = useState<string | null>(null);
+  const [instruments, setInstruments] = useState<InstrumentSummary[] | null>(null);
+  const [instrumentsError, setInstrumentsError] = useState<string | null>(null);
 
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
 
@@ -167,27 +164,28 @@ export function Instrument({ method }: InstrumentProps) {
   const [chartError, setChartError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // The picker's own candidate list: currently open live positions. Runs again
-  // on a method change for the same reason `Positions.tsx` refetches -- the
-  // set of open positions can differ by lot method -- but never overwrites an
-  // ISIN the reader already picked.
+  // The picker's own candidate list: every instrument the ledger has ever
+  // recorded an economic trade for -- not only the ones with an open position
+  // today (see this file's own docstring for why that distinction matters).
+  // Fetched exactly once: unlike `Positions.tsx`'s method-scoped list, which
+  // instruments were ever traded does not depend on a lot-matching method.
   useEffect(() => {
     let cancelled = false;
-    fetchPositions(method)
-      .then((page) => {
+    fetchInstruments()
+      .then((items) => {
         if (cancelled) return;
-        setPositions(page);
-        setPositionsError(null);
-        setIsin((current) => current ?? page.items[0]?.isin ?? null);
+        setInstruments(items);
+        setInstrumentsError(null);
+        setIsin((current) => current ?? items[0]?.isin ?? null);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setPositionsError(cause instanceof Error ? cause.message : String(cause));
+        setInstrumentsError(cause instanceof Error ? cause.message : String(cause));
       });
     return () => {
       cancelled = true;
     };
-  }, [method]);
+  }, []);
 
   // The benchmark list. Independent of everything the reader picks, so it is
   // fetched exactly once.
@@ -238,10 +236,10 @@ export function Instrument({ method }: InstrumentProps) {
     [chart, benchmarkKey],
   );
 
-  if (positionsError) {
+  if (instrumentsError) {
     return (
       <Notice tone="danger">
-        Could not reach the API. {positionsError}. Start it with{" "}
+        Could not reach the API. {instrumentsError}. Start it with{" "}
         <code style={{ fontFamily: mono }}>
           python -m uvicorn app.main:create_app --factory
         </code>
@@ -250,14 +248,14 @@ export function Instrument({ method }: InstrumentProps) {
     );
   }
 
-  if (positions === null) {
+  if (instruments === null) {
     return <div style={{ fontSize: 12, color: c.textFaint }}>Loading…</div>;
   }
 
-  if (positions.items.length === 0) {
+  if (instruments.length === 0) {
     return (
       <Notice tone="modelled">
-        No open live positions to chart yet. Import an export, then run{" "}
+        No instruments traded yet. Import an export, then run{" "}
         <code style={{ fontFamily: mono }}>python -m app.cli fetch-prices</code> and{" "}
         <code style={{ fontFamily: mono }}>python -m app.cli rebuild</code>.
       </Notice>
@@ -272,16 +270,16 @@ export function Instrument({ method }: InstrumentProps) {
     return <div style={{ fontSize: 12, color: c.textFaint }}>Loading…</div>;
   }
 
-  const selected = positions.items.find((p) => p.isin === isin);
+  const selected = instruments.find((i) => i.isin === isin);
   const comparison = chart.comparison;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {positions.items.map((p) => (
-            <Pill key={p.isin} monospace active={p.isin === isin} onClick={() => setIsin(p.isin)}>
-              {p.product_name || p.isin}
+          {instruments.map((i) => (
+            <Pill key={i.isin} monospace active={i.isin === isin} onClick={() => setIsin(i.isin)}>
+              {i.product_name || i.isin}
             </Pill>
           ))}
         </div>

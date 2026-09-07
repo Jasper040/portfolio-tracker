@@ -128,7 +128,7 @@ export default function App() {
               onSelect={setSelectedIsin}
             />
           )}
-          {tab === "instr" && <Instrument method={method} />}
+          {tab === "instr" && <Instrument />}
           {tab === "whatif" && <WhatIf data={data} agg={agg} method={method} />}
           {tab === "div" && <Dividends data={data} agg={agg} />}
           {tab === "bm" && <Benchmarks data={data} agg={agg} />}

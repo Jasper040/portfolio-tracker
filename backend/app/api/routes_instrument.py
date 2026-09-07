@@ -14,6 +14,13 @@ module docstrings), so this file is the one place allowed to reach both: it
 passes `instrument_price_view(...)`'s own `Interval` tuple straight into
 `comparison(...)`, which accepts it structurally through `HoldingInterval`
 without importing the concrete type.
+
+`GET /api/instruments` (M3 Task 9's fix round) also lives here: the list of
+every ISIN this ledger has ever traded, for the frontend's instrument picker.
+It reads `Transaction` directly rather than `/api/positions`'s snapshot on
+purpose -- a fully exited instrument has no open position, and is exactly the
+"out of market" case this milestone exists to make visible, not one to hide
+from the picker that opens its own chart.
 """
 
 from __future__ import annotations
@@ -36,6 +43,8 @@ from app.api.schemas import (
     ComparisonOut,
     IndexPointOut,
     InstrumentChartOut,
+    InstrumentListOut,
+    InstrumentSummaryOut,
     IntervalExcessOut,
     IntervalOut,
     MarkerOut,
@@ -79,6 +88,47 @@ def _earliest_trade_date(engine: Engine, isin: str) -> date | None:
             .limit(1)
         ).first()
     return row.trade_date if row is not None else None
+
+
+def _traded_instruments(engine: Engine) -> list[InstrumentSummaryOut]:
+    """Every ISIN this ledger has ever recorded an economic trade for, each
+    paired with a display name, ordered by ISIN so the picker's list is
+    stable across requests regardless of the order rows happen to come back
+    from the database.
+
+    `is_economic` is the same filter `_markers` applies in
+    `analytics/instrument_price.py`, and for the same reason: a corporate
+    action's legs are recorded as a buy and a sell that never happened, and
+    without this clause they would conjure a phantom instrument nobody ever
+    traded.
+
+    Deduplicated in Python rather than with a `DISTINCT ON` (Postgres-only,
+    and this project also runs on SQLite in tests): rows are read in trade-date
+    order, so the LAST economic trade's `product_name` wins for an ISIN whose
+    name ever changed on the wire, and this is small, ledger-scale data --
+    a personal portfolio's transaction count, not a warehouse table.
+    """
+    with Session(engine) as session:
+        rows = session.exec(
+            select(Transaction)
+            .where(Transaction.is_economic == True)  # noqa: E712 -- SQL, not Python
+            .order_by(
+                Transaction.trade_date,  # type: ignore[arg-type]
+                Transaction.source_ref,
+                Transaction.id,  # type: ignore[arg-type]
+            )
+        ).all()
+
+    names: dict[str, str] = {}
+    for row in rows:
+        if row.isin is None:
+            continue
+        names[row.isin] = row.product_name or row.isin
+
+    return [
+        InstrumentSummaryOut(isin=isin, product_name=name)
+        for isin, name in sorted(names.items())
+    ]
 
 
 def _latest_priced_day(engine: Engine, isin: str) -> date | None:
@@ -144,6 +194,15 @@ def _comparison_out(
         linked_benchmark_return=result.linked_benchmark_return,
         linked_excess=result.linked_excess,
         coverage=result.coverage,
+    )
+
+
+@router.get("/instruments", response_model=InstrumentListOut)
+def list_instruments(engine: Engine = Depends(get_engine)) -> InstrumentListOut:
+    return InstrumentListOut(
+        items=_traded_instruments(engine),
+        method=None,
+        coverage="full",
     )
 
 

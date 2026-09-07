@@ -233,6 +233,17 @@ export interface InstrumentChart extends Provenance {
   comparison: Comparison | null;
 }
 
+/** One ISIN this ledger has ever recorded an economic trade for. Mirrors
+ *  `InstrumentSummaryOut`. Enough for a picker to list and label it -- price,
+ *  coverage and holding state belong to `InstrumentChart`, not here. Returned
+ *  for every traded instrument, not only the ones with an open position: a
+ *  fully exited instrument is a real "out of market" case, not one to hide
+ *  from the picker that opens its own chart. */
+export interface InstrumentSummary {
+  isin: string;
+  product_name: string;
+}
+
 /** One configured benchmark. Mirrors `BenchmarkOut`. Never the underlying
  *  provider symbol -- that is provider trivia the screen has no use for. */
 export interface Benchmark {

@@ -424,6 +424,31 @@ class InstrumentChartOut(Provenance):
     comparison: ComparisonOut | None
 
 
+class InstrumentSummaryOut(BaseModel):
+    """One ISIN this ledger has ever recorded an economic trade for. Just
+    enough for a picker to list and label it -- anything more (price,
+    coverage, holding state) belongs to the chart endpoint, not here."""
+
+    isin: str
+    product_name: str
+
+
+class InstrumentListOut(Provenance):
+    """Every instrument the ledger has ever traded -- not only the ones with
+    an open position today (M3 Task 9's fix round: a fully exited instrument
+    is the clearest "out of market" case the milestone exists to show, and
+    `/api/positions` cannot surface it).
+
+    `method` is `None` for the same reason it is on `InstrumentChartOut`: this
+    is a distinct-ISIN listing, not a lot-matched figure, so no method ever
+    ran. `coverage` is always `"full"`, for the same reason `/api/transactions`
+    reports it -- every row is broker truth and nothing here depends on an
+    external series that could be missing.
+    """
+
+    items: list[InstrumentSummaryOut]
+
+
 class BenchmarkOut(BaseModel):
     """One configured benchmark. Never the symbol -- that is provider trivia
     the screen has no use for, and not sending it is one less thing on the

@@ -70,7 +70,16 @@ class Seed:
                 )
                 session.commit()
 
-    def traded(self, on: date, isin: str = ISIN, *, quantity: str = "10") -> "Seed":
+    def traded(
+        self,
+        on: date,
+        isin: str = ISIN,
+        *,
+        quantity: str = "10",
+        txn_type: str = "BUY",
+        is_economic: bool = True,
+        product_name: str = "Example",
+    ) -> "Seed":
         batch_id = uuid4()
         with Session(self.engine) as session:
             session.add(
@@ -84,11 +93,11 @@ class Seed:
             session.add(
                 Transaction(
                     id=uuid4(), account_id=account_id, import_batch_id=batch_id,
-                    source="degiro", source_ref=f"n-{uuid4()}", txn_type="BUY",
-                    trade_date=on, isin=isin, product_name="Example", quantity=D(quantity),
+                    source="degiro", source_ref=f"n-{uuid4()}", txn_type=txn_type,
+                    trade_date=on, isin=isin, product_name=product_name, quantity=D(quantity),
                     price_local=D("10.00"), currency_local="EUR", fee_base=ZERO,
                     tax_base=ZERO, autofx_fee_base=ZERO, value_base=D("-100.00"),
-                    net_base=D("-100.00"), raw_json="{}",
+                    net_base=D("-100.00"), raw_json="{}", is_economic=is_economic,
                 )
             )
             session.commit()
@@ -301,6 +310,55 @@ class TestExcessReason:
         assert row["excess"] is None
         assert row["reason"] is not None
         assert "world" in row["reason"]
+
+
+class TestInstrumentList:
+    """`GET /api/instruments` (M3 Task 9 fix-round): the picker's candidate
+    list must reach every instrument the ledger ever traded, not only the ones
+    with an open position today -- an instrument fully exited is the clearest
+    "out of market" case M3's whole feature exists to show.
+    """
+
+    def test_lists_an_instrument_that_has_since_been_fully_closed(self) -> None:
+        """No `PositionDaily` row is seeded at all: as far as `/api/positions`
+        is concerned this ISIN was never open. The BUY-then-SELL pair leaves
+        it at quantity zero today, which is exactly the case `fetchPositions`
+        could never surface and this endpoint must.
+        """
+        engine = create_engine_and_tables("sqlite://")
+        seed = Seed(engine)
+        seed.traded(HELD_START, ISIN, txn_type="BUY", product_name="Closed Fund")
+        seed.traded(HELD_END, ISIN, txn_type="SELL", product_name="Closed Fund")
+        client = TestClient(create_app(engine=engine, benchmarks=BENCHMARKS))
+
+        body = client.get("/api/instruments").json()
+        by_isin = {item["isin"]: item for item in body["items"]}
+        assert ISIN in by_isin
+        assert by_isin[ISIN]["product_name"] == "Closed Fund"
+
+    def test_excludes_non_economic_legs(self) -> None:
+        """The same filter `_markers` applies in `analytics/instrument_price.py`,
+        and for the same reason: a corporate action's legs are not real trades,
+        and without this clause they would conjure a phantom instrument that
+        was never actually bought or sold.
+        """
+        split_only = "XX0000000009"  # invented; appears only as a split leg
+        engine = create_engine_and_tables("sqlite://")
+        seed = Seed(engine)
+        seed.traded(HELD_START, split_only, is_economic=False, product_name="Split Leg")
+        client = TestClient(create_app(engine=engine, benchmarks=BENCHMARKS))
+
+        body = client.get("/api/instruments").json()
+        isins = {item["isin"] for item in body["items"]}
+        assert split_only not in isins
+
+    def test_carries_the_provenance_envelope(self) -> None:
+        """`method` is `None` for the same reason it is on the chart: a
+        distinct-ISIN listing has no lot method to name."""
+        client = _basic_client()
+        body = client.get("/api/instruments").json()
+        assert body["method"] is None
+        assert body["coverage"] in ("missing", "partial", "manual", "full")
 
 
 class TestBenchmarkList:

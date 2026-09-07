@@ -2,6 +2,7 @@ import type {
   Benchmark,
   ClosurePage,
   InstrumentChart,
+  InstrumentSummary,
   LotMethodTag,
   LotPage,
   PositionsPage,
@@ -129,5 +130,19 @@ export async function fetchBenchmarks(): Promise<Benchmark[]> {
     throw new Error(`Failed to load benchmarks: ${response.status} ${response.statusText}`);
   }
   const body = (await response.json()) as { items: Benchmark[] };
+  return body.items;
+}
+
+/** Every instrument the ledger has ever recorded an economic trade for --
+ *  not only the ones with an open position today. Backs the instrument
+ *  picker on `screens/Instrument.tsx`: a fully exited instrument is a real
+ *  "out of market" case M3 exists to show, and `/api/positions` cannot
+ *  surface it. */
+export async function fetchInstruments(): Promise<InstrumentSummary[]> {
+  const response = await fetch(`${BASE}/api/instruments`);
+  if (!response.ok) {
+    throw new Error(`Failed to load instruments: ${response.status} ${response.statusText}`);
+  }
+  const body = (await response.json()) as { items: InstrumentSummary[] };
   return body.items;
 }

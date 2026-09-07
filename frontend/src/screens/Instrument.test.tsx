@@ -9,27 +9,28 @@
  *  canvas, and every drawing decision is already covered as a pure function in
  *  `lib/instrument.test.ts`. What is left here is what only a rendered screen
  *  can be wrong about: whether a `null` excess reads as a dash with its reason
- *  attached rather than a silent "0,00%", and whether the benchmark's own span
+ *  attached rather than a silent "0,00%", whether the benchmark's own span
  *  coverage stays visibly separate from the instrument's own staleness
- *  coverage instead of reading as the same judgement twice.
+ *  coverage instead of reading as the same judgement twice, and -- since the
+ *  review fix round -- whether an instrument with no open position is still
+ *  reachable from the picker at all.
  */
 
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchBenchmarks, fetchInstrumentChart, fetchPositions } from "../api/client";
+import { fetchBenchmarks, fetchInstrumentChart, fetchInstruments } from "../api/client";
 import type {
   Benchmark,
   Comparison,
   InstrumentChart,
+  InstrumentSummary,
   IntervalExcess,
-  LivePosition,
-  PositionsPage,
 } from "../api/types";
 import { Instrument } from "./Instrument";
 
 vi.mock("../api/client", () => ({
-  fetchPositions: vi.fn(),
+  fetchInstruments: vi.fn(),
   fetchBenchmarks: vi.fn(),
   fetchInstrumentChart: vi.fn(),
 }));
@@ -40,41 +41,12 @@ vi.mock("../components/charts/EChart", () => ({
   ),
 }));
 
-const mockPositions = vi.mocked(fetchPositions);
+const mockInstruments = vi.mocked(fetchInstruments);
 const mockBenchmarks = vi.mocked(fetchBenchmarks);
 const mockChart = vi.mocked(fetchInstrumentChart);
 
-function position(overrides: Partial<LivePosition> = {}): LivePosition {
-  return {
-    isin: "XX0000000001",
-    product_name: "Example Fund",
-    currency: "EUR",
-    quantity: "10",
-    cost_basis: "100.00",
-    charges_base: "1.00",
-    price: "12.00",
-    price_date: "2025-03-03",
-    source: "yahoo",
-    market_value_base: "120.00",
-    gross_unrealised_base: "20.00",
-    unrealised_base: "19.00",
-    unrealised_pct: "0.19",
-    coverage: "full",
-    ...overrides,
-  };
-}
-
-function positionsPage(items: LivePosition[]): PositionsPage {
-  return {
-    items,
-    as_of: "2025-03-03",
-    total_cost_basis: "100.00",
-    total_market_value_base: "120.00",
-    total_unrealised_base: "19.00",
-    base_currency: "EUR",
-    method: "FIFO",
-    coverage: "full",
-  };
+function instrument(overrides: Partial<InstrumentSummary> = {}): InstrumentSummary {
+  return { isin: "XX0000000001", product_name: "Example Fund", ...overrides };
 }
 
 function benchmark(overrides: Partial<Benchmark> = {}): Benchmark {
@@ -128,17 +100,17 @@ function chart(overrides: Partial<InstrumentChart> = {}): InstrumentChart {
  *  default chart fixture for a specific ISIN; anything not listed falls back
  *  to `chart({ isin })` so a test only has to describe what it cares about. */
 function serve(
-  positions: PositionsPage,
+  instruments: InstrumentSummary[],
   benchmarks: Benchmark[],
   byIsin: Record<string, InstrumentChart> = {},
 ): void {
-  mockPositions.mockResolvedValue(positions);
+  mockInstruments.mockResolvedValue(instruments);
   mockBenchmarks.mockResolvedValue(benchmarks);
   mockChart.mockImplementation((isin) => Promise.resolve(byIsin[isin] ?? chart({ isin })));
 }
 
 beforeEach(() => {
-  mockPositions.mockReset();
+  mockInstruments.mockReset();
   mockBenchmarks.mockReset();
   mockChart.mockReset();
 });
@@ -150,13 +122,13 @@ afterEach(() => {
 describe("the instrument picker", () => {
   it("loads the default instrument's chart, then refetches when another is picked", async () => {
     serve(
-      positionsPage([
-        position({ isin: "XX0000000001", product_name: "Example Fund" }),
-        position({ isin: "XX0000000002", product_name: "Other Fund" }),
-      ]),
+      [
+        instrument({ isin: "XX0000000001", product_name: "Example Fund" }),
+        instrument({ isin: "XX0000000002", product_name: "Other Fund" }),
+      ],
       [],
     );
-    render(<Instrument method="FIFO" />);
+    render(<Instrument />);
 
     await waitFor(() =>
       expect(mockChart).toHaveBeenCalledWith("XX0000000001", { range: "1Y", benchmark: null }),
@@ -169,12 +141,38 @@ describe("the instrument picker", () => {
       expect(mockChart).toHaveBeenCalledWith("XX0000000002", { range: "1Y", benchmark: null }),
     );
   });
+
+  it("offers an instrument with no open position, and selecting it fetches its chart", async () => {
+    // The review fix: the picker reads `fetchInstruments` (every ISIN ever
+    // traded), not `fetchPositions` (only open ones). "Closed Fund" here has
+    // no holding at all -- it is the fully-exited case `fetchPositions` could
+    // never surface, and the whole reason this screen exists is to show
+    // exactly that instrument's out-of-market intervals.
+    serve(
+      [
+        instrument({ isin: "XX0000000001", product_name: "Example Fund" }),
+        instrument({ isin: "XX0000000003", product_name: "Closed Fund" }),
+      ],
+      [],
+    );
+    render(<Instrument />);
+    await waitFor(() =>
+      expect(mockChart).toHaveBeenCalledWith("XX0000000001", { range: "1Y", benchmark: null }),
+    );
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(await screen.findByRole("button", { name: "Closed Fund" }));
+
+    await waitFor(() =>
+      expect(mockChart).toHaveBeenCalledWith("XX0000000003", { range: "1Y", benchmark: null }),
+    );
+  });
 });
 
 describe("the range control", () => {
   it("re-requests the chart with the newly selected range", async () => {
-    serve(positionsPage([position()]), []);
-    render(<Instrument method="FIFO" />);
+    serve([instrument()], []);
+    render(<Instrument />);
     await waitFor(() =>
       expect(mockChart).toHaveBeenCalledWith("XX0000000001", { range: "1Y", benchmark: null }),
     );
@@ -190,10 +188,10 @@ describe("the range control", () => {
 
 describe("the benchmark selector", () => {
   it("adds the overlay when a benchmark is picked and removes it when cleared", async () => {
-    serve(positionsPage([position()]), [benchmark({ key: "world", name: "World Equities" })], {
+    serve([instrument()], [benchmark({ key: "world", name: "World Equities" })], {
       XX0000000001: chart({ comparison: comparison() }),
     });
-    render(<Instrument method="FIFO" />);
+    render(<Instrument />);
     await waitFor(() =>
       expect(mockChart).toHaveBeenCalledWith("XX0000000001", { range: "1Y", benchmark: null }),
     );
@@ -215,7 +213,7 @@ describe("the benchmark selector", () => {
 
 describe("excess returns", () => {
   it("renders a dash and the reason, never 0,00%, when excess could not be computed", async () => {
-    serve(positionsPage([position()]), [benchmark()], {
+    serve([instrument()], [benchmark()], {
       XX0000000001: chart({
         comparison: comparison({
           intervals: [
@@ -227,7 +225,7 @@ describe("excess returns", () => {
         }),
       }),
     });
-    render(<Instrument method="FIFO" />);
+    render(<Instrument />);
 
     expect(await screen.findByText(/does not cover this interval/i)).toBeInTheDocument();
     const table = screen.getByRole("table");
@@ -238,10 +236,10 @@ describe("excess returns", () => {
 
 describe("coverage", () => {
   it("shows the benchmark's own span coverage separately from the instrument's own coverage", async () => {
-    serve(positionsPage([position()]), [benchmark()], {
+    serve([instrument()], [benchmark()], {
       XX0000000001: chart({ coverage: "full", comparison: comparison({ coverage: "partial" }) }),
     });
-    render(<Instrument method="FIFO" />);
+    render(<Instrument />);
 
     await screen.findByText("FULL");
     expect(screen.getByText(/BENCHMARK SPAN/i)).toBeInTheDocument();
@@ -251,10 +249,10 @@ describe("coverage", () => {
 
 describe("basis", () => {
   it("labels the excess figure with the basis the API returned", async () => {
-    serve(positionsPage([position()]), [benchmark()], {
+    serve([instrument()], [benchmark()], {
       XX0000000001: chart({ comparison: comparison({ basis: "total_return" }) }),
     });
-    render(<Instrument method="FIFO" />);
+    render(<Instrument />);
 
     // The basis label appears both in the table (next to each excess figure)
     // and in the panel's linked-total footnote -- both are the right place for
