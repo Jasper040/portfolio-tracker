@@ -31,6 +31,7 @@ RUN_ONE_START = date(2026, 1, 1)
 RUN_ONE_END = date(2026, 1, 8)
 SELL_ON = date(2026, 1, 9)
 RUN_TWO_START = date(2026, 3, 2)
+SPLIT_ON = date(2026, 2, 2)  # inside the flat interval; a corporate action, not a trade
 
 
 class Seed:
@@ -42,10 +43,15 @@ class Seed:
     def __init__(self, engine) -> None:
         self.engine = engine
         with Session(engine) as session:
-            session.add(
-                Account(id=uuid4(), broker="degiro", name="test", base_currency="EUR")
-            )
-            session.commit()
+            # Idempotent: a test that extends an already-seeded fixture (adding
+            # a corporate-action leg to `seeded_engine`, say) re-wraps the same
+            # engine in a fresh `Seed` rather than threading the original
+            # instance through, and must not accumulate a second Account row.
+            if session.exec(select(Account)).first() is None:
+                session.add(
+                    Account(id=uuid4(), broker="degiro", name="test", base_currency="EUR")
+                )
+                session.commit()
 
     def held(self, on: date, isin: str, quantity: str) -> "Seed":
         with Session(self.engine) as session:
@@ -213,6 +219,28 @@ def test_held_days_are_marked_and_flat_days_are_not(seeded_engine) -> None:
 
 
 def test_a_marker_per_ledger_transaction_carrying_the_position_after(seeded_engine) -> None:
+    view = instrument_price_view(
+        seeded_engine, ISIN, start=date(2026, 1, 1), end=date(2026, 3, 31)
+    )
+    assert [m.side for m in view.markers] == ["BUY", "SELL", "BUY"]
+    assert [m.position_after for m in view.markers] == [D("10"), D("0"), D("5")]
+
+
+def test_a_non_economic_leg_is_excluded_from_markers(seeded_engine) -> None:
+    """A corporate-action leg is not a trade. M0 flags both legs of a split
+    `is_economic=False` -- `domain/splits.py` reads exactly those to derive the
+    ratio -- so without the `is_economic` filter a 10-for-1 split would draw as
+    a phantom sell of the old shares and a phantom buy of the new ones, on the
+    one day the reader is most likely to be checking why the line moved.
+
+    Regression coverage for that filter: a load-bearing clause with no test
+    around it is a comment, not a guarantee.
+    """
+    (
+        Seed(seeded_engine)
+        .traded(SPLIT_ON, ISIN, "SELL", "-5", "0.00", is_economic=False)
+        .traded(SPLIT_ON, ISIN, "BUY", "50", "0.00", is_economic=False)
+    )
     view = instrument_price_view(
         seeded_engine, ISIN, start=date(2026, 1, 1), end=date(2026, 3, 31)
     )
