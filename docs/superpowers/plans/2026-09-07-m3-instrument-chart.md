@@ -1590,7 +1590,7 @@ def instrument_with_most_in_market_intervals(engine: Engine) -> tuple[str, int]:
 - [ ] **Step 2: Write the acceptance tests**
 
 - The derived instrument has at least three in-market intervals, alternating strictly with the flat ones.
-- Every day a position was held has a price, or the test skips with the same "cache is empty" reason `test_realdata_prices.py` uses — the outstanding operator step from `docs/M2-FOLLOW-UPS.md` item 1 gates this suite exactly as it gates M2's nine.
+- Every day a position was held has a price, or the test skips with the same "cache is empty" reason `test_realdata_prices.py` uses — the outstanding operator step **PT-10** gates this suite exactly as it gates M2's nine.
 - No interval's rebased index starts anywhere but 100.
 - Where a benchmark is configured, its coverage over each in-market interval is reported and every excess figure is either a number or `null` with a reason.
 
@@ -1602,9 +1602,13 @@ cd backend && ./.venv/Scripts/python.exe -m pytest -q -m realdata -rs
 
 A green run **with skips** is the expected outcome until the symbol question is answered. Read the skip reasons; do not read the green.
 
-- [ ] **Step 4: Write `docs/M3-FOLLOW-UPS.md` and merge**
+- [ ] **Step 4: File anything carried, then merge**
 
-Record anything triaged as safe to carry, following `docs/M2-FOLLOW-UPS.md`'s shape — including its rule that no instrument is named. Then merge to `master` with a merge commit, as M2 did.
+Record anything triaged as safe to carry as a Jira issue under **PT-4**, labelled `carried`. **Do not write a `docs/M3-FOLLOW-UPS.md`** — carried work lives on the board now, and a markdown list of it is the second source of truth `docs/TRACKING.md` exists to prevent.
+
+The rule that no instrument is named applies to a Jira issue exactly as it applied to that file, and more strictly: `test_no_real_data_committed` cannot see Jira. Describe the shape, give the command that names the specifics.
+
+Then merge to `master` with a merge commit, as M2 did.
 
 ---
 
