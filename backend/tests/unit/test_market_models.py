@@ -233,3 +233,23 @@ class TestSymbolReview:
         with Session(engine) as session, pytest.raises(IntegrityError):
             session.add(row('[{"symbol": "EXB.DE"}]'))
             session.commit()
+
+
+def test_benchmark_daily_is_unique_on_key_and_date() -> None:
+    """One row per benchmark per day. A second row for the same day would make
+    the series depend on insertion order, which is the bug the constraint on
+    `price_daily` already prevents for instruments."""
+    from app.models.market import BenchmarkDaily
+
+    constraint = next(
+        arg for arg in BenchmarkDaily.__table_args__ if hasattr(arg, "columns")
+    )
+    assert {column.name for column in constraint.columns} == {"key", "price_date"}
+
+
+def test_benchmark_daily_has_no_isin_column() -> None:
+    """M3 section 4.1: the key is a slug so the config file can be committed.
+    An `isin` column here would invite exactly the row this design excludes."""
+    from app.models.market import BenchmarkDaily
+
+    assert "isin" not in BenchmarkDaily.model_fields
