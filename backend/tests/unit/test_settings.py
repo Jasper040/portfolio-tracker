@@ -9,7 +9,6 @@ def test_settings_reads_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./test.sqlite")
     s = Settings()
     assert s.database_url == "sqlite:///./test.sqlite"
-    assert s.base_currency == "EUR"
     assert s.lot_method == "FIFO"
 
 
@@ -66,3 +65,20 @@ def test_corporate_actions_path_is_still_overridable(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
     monkeypatch.setenv("CORPORATE_ACTIONS_PATH", "/tmp/answers.yaml")
     assert Settings().corporate_actions_path == "/tmp/answers.yaml"
+
+
+def test_the_symbol_and_price_answer_files_default_beside_the_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absolute, anchored on the repo, for the reason `corporate_actions_path`
+    is: the API starts from `backend/` and the CLI runs from wherever the
+    operator happens to be. A relative default breaks in the worst way -- an
+    unreadable answers file answers nothing, so `fetch-prices` refuses and
+    reports every instrument as unresolved while the file sits there, answered,
+    one directory up."""
+    monkeypatch.setenv("DATABASE_URL", "sqlite://")
+    settings = Settings()
+    assert Path(settings.instrument_symbols_path).is_absolute()
+    assert Path(settings.instrument_symbols_path).name == "instrument_symbols.yaml"
+    assert Path(settings.manual_prices_path).is_absolute()
+    assert Path(settings.manual_prices_path).name == "manual_prices.csv"

@@ -1,0 +1,18 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "symbol": "EXC.DE",
+          "gmtoffset": 3600
+        },
+        "timestamp": [1736150400],
+        "indicators": {
+          "quote": [{ "close": [9.1] }],
+          "adjclose": [{ "adjclose": [9.1] }]
+        }
+      }
+    ],
+    "error": null
+  }
+}

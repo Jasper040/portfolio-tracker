@@ -23,6 +23,7 @@ agrees with it by construction, and would keep agreeing after both broke togethe
 from __future__ import annotations
 
 import csv
+import os
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -37,6 +38,10 @@ _ZERO = Decimal("0")
 # Column positions, per design doc Sec 3.1: the header is misaligned, so every
 # reader maps by position and never by name.
 _DATE, _TIME, _PRODUCT, _ISIN, _QTY = 0, 1, 2, 3, 6
+#: The executed price and the currency it was executed in. Sec 3.1: the currency
+#: column PRECEDES its amount, and the header's blank placeholder sits on the
+#: wrong side -- so these are mapped by position like everything else here.
+_PRICE, _PRICE_CCY = 7, 8
 _LOCAL_VALUE, _VALUE_EUR, _AUTOFX, _FEE, _TOTAL_EUR, _ORDER_ID = 9, 11, 13, 14, 15, 16
 
 
@@ -71,6 +76,13 @@ class TradeRow:
     fee: Decimal
     autofx: Decimal
     order_ref: str | None
+    #: The executed price per share, in the trade currency. This is what the
+    #: symbol discriminator compares against a provider's close -- NOT the
+    #: base-currency price the lot matcher uses, because a provider quotes in
+    #: its own currency and converting first would make the FX rate a third
+    #: unknown in a check that already has two.
+    price_local: Decimal | None
+    price_ccy: str
 
 
 def trades() -> list[TradeRow]:
@@ -91,6 +103,8 @@ def trades() -> list[TradeRow]:
                     fee=_decimal(row[_FEE]) or _ZERO,
                     autofx=_decimal(row[_AUTOFX]) or _ZERO,
                     order_ref=row[_ORDER_ID].strip() or None,
+                    price_local=_decimal(row[_PRICE]),
+                    price_ccy=row[_PRICE_CCY].strip(),
                 )
             )
     return rows
@@ -251,3 +265,83 @@ def transaction_fee_total() -> Decimal:
             ):
                 total += _decimal(row[8]) or _ZERO
     return total
+
+
+def traded_isins() -> set[str]:
+    """Every instrument the account ever moved shares in."""
+    return {row.isin for row in trades() if row.isin and row.quantity != 0}
+
+
+def trade_currency(isin: str) -> str:
+    """The currency this instrument's fills were priced in.
+
+    Raises if the export priced one instrument in two currencies -- which the
+    symbol discriminator also refuses, because there is then no single trade
+    currency for a candidate series to match.
+    """
+    found = {row.price_ccy for row in trades() if row.isin == isin and row.price_ccy}
+    if len(found) != 1:
+        raise AssertionError(f"{len(found)} trade currencies for one instrument")
+    return found.pop()
+
+
+def executed_prices(isin: str) -> list[tuple[date, Decimal]]:
+    """(date, price) for every fill in this instrument, oldest first.
+
+    The oracle the symbol check is measured against: what the account actually
+    paid, on the days it paid it.
+    """
+    return sorted(
+        (row.trade_date, row.price_local)
+        for row in trades()
+        if row.isin == isin and row.price_local is not None and row.quantity != 0
+    )
+
+
+def first_trade_date() -> date:
+    return min(row.trade_date for row in trades())
+
+
+def local_database_url() -> str | None:
+    """The operator's own database -- `DATABASE_URL` if set, else `backend/.env`.
+
+    Precedence, deliberately not the brief's original (env-only) reading:
+    the `DATABASE_URL` environment variable is consulted FIRST, and
+    `backend/.env` is parsed only when that variable is unset. Reading `.env`
+    unconditionally would mean this acceptance suite always resolves to the
+    operator's real ledger database the moment it exists -- and the cache-side
+    tests only read, they do not populate, but a scratch run of this suite has
+    no business touching that file at all. Setting `DATABASE_URL` in the
+    environment lets an acceptance run point at a scratch database (or at
+    nothing) without perturbing the operator's own `.env`-driven invocation,
+    which still resolves exactly as before.
+
+    Returns None when there is nothing to read -- no environment variable, no
+    `.env` file, no `DATABASE_URL` line in it -- or when a `sqlite:///` URL
+    names a file that does not exist. All of these are ordinary states, not
+    failures.
+    """
+    from_env = os.environ.get("DATABASE_URL")
+    if from_env is not None:
+        return _resolved_sqlite_path(from_env)
+
+    env = REPO / "backend" / ".env"
+    if not env.exists():
+        return None
+    for line in env.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() != "DATABASE_URL":
+            continue
+        return _resolved_sqlite_path(value.strip())
+    return None
+
+
+def _resolved_sqlite_path(url: str) -> str | None:
+    """`url`, or None if it is blank or a `sqlite:///` path that does not exist."""
+    url = url.strip()
+    prefix = "sqlite:///"
+    if url.startswith(prefix):
+        path = Path(url[len(prefix) :])
+        candidate = path if path.is_absolute() else (REPO / "backend" / path)
+        return url if candidate.exists() else None
+    return url or None

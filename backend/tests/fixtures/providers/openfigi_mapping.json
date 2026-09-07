@@ -1,0 +1,28 @@
+[
+  {
+    "data": [
+      {
+        "figi": "BBG000000001",
+        "name": "EXAMPLE HOLDINGS NV",
+        "ticker": "EXA",
+        "exchCode": "NA",
+        "compositeFIGI": "BBG000000001",
+        "securityType": "Common Stock",
+        "marketSector": "Equity",
+        "securityType2": "Common Stock",
+        "securityDescription": "EXA"
+      },
+      {
+        "figi": "BBG000000002",
+        "name": "EXAMPLE HOLDINGS NV",
+        "ticker": "EXA",
+        "exchCode": "GY",
+        "compositeFIGI": "BBG000000002",
+        "securityType": "Common Stock",
+        "marketSector": "Equity",
+        "securityType2": "Common Stock",
+        "securityDescription": "EXA"
+      }
+    ]
+  }
+]

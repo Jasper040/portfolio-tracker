@@ -1,0 +1,8 @@
+isin,date,close,currency
+# Prices for instruments no provider covers. Copy to manual_prices.csv and edit.
+# One row per instrument per day. The close is in the instrument's own currency;
+# FX to the base currency is applied from fx_daily, exactly as for a fetched price.
+# A price here carries coverage "manual" wherever it is used, so a reader can see
+# that the number was typed rather than measured.
+NL0000000001,2025-01-06,12.50,EUR
+NL0000000001,2025-01-07,12.75,EUR

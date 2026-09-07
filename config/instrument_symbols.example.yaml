@@ -1,0 +1,22 @@
+# Symbol answers (M2 spec section 6.3). Copy to instrument_symbols.yaml and edit.
+#
+# `fetch-prices` resolves what it can prove against the ledger and asks about the
+# rest. It refuses to complete while anything is unanswered, and prints a
+# paste-ready block for this file when it does -- so you never have to invent a
+# key by hand.
+#
+# The question being answered is always "which of these tickers is the instrument
+# I actually traded". A candidate can resolve from a real ISIN, return years of
+# real daily bars, and be a leveraged or inverse product on the same underlying:
+# the quarantine shows you the measured ratio of your own executed prices against
+# each candidate's closes, and a correct symbol sits near 1.00 on every trade.
+#
+# `symbol: manual` routes an instrument to config/manual_prices.csv instead. Use
+# it when no public series exists -- a private company, a microcap nobody indexes.
+symbols:
+  - isin: NL0000000001
+    symbol: EXA.AS
+    note: Euronext Amsterdam listing; ratios 0.99-1.01 across every trade
+  - isin: US0000000404
+    symbol: manual
+    note: no public series on any free tier

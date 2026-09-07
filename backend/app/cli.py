@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -22,8 +24,18 @@ from app.ingest.importer import (
     import_degiro_export,
     undo_batch,
 )
+from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_prices
 from app.ingest.reconcile import reconcile
+from app.ingest.symbols import (
+    MANUAL_ANSWER,
+    MalformedSymbolAnswers,
+    ResolutionReport,
+    load_symbol_answers,
+)
 from app.models.ledger import CorporateActionReview, ImportBatch
+from app.models.market import SymbolReview
+from app.providers.base import ProviderError
+from app.providers.manual import MalformedManualPrices
 from app.settings import get_settings
 
 app = typer.Typer(help="Portfolio tracker maintenance commands.")
@@ -196,11 +208,23 @@ def rebuild_command(
     method: Annotated[
         str, typer.Option("--method", help="FIFO, LIFO or HIFO. Defaults to the configured one.")
     ] = "",
+    through: Annotated[
+        str,
+        typer.Option(
+            "--through",
+            help="Last day of the daily position and cash series. Defaults to today.",
+        ),
+    ] = "",
 ) -> None:
-    """Recompute lots and closures from the ledger (design doc Sec 11.2).
+    """Recompute the derived tables from the ledger (design doc Sec 11.2).
 
-    Derived tables only -- the ledger is untouched. Exits non-zero if attributed
-    charges do not equal the ledger's, having written nothing.
+    Derived tables only -- the ledger and the price cache are both untouched.
+    Exits non-zero if attributed charges do not equal the ledger's, having
+    written nothing.
+
+    The daily series runs to `--through`, defaulting to today rather than to the
+    last trade: a position held since the last trade is still held, and a chart
+    that stopped there would say otherwise.
     """
     settings = get_settings()
     chosen = (method or settings.lot_method).upper()
@@ -208,9 +232,15 @@ def rebuild_command(
         typer.echo(f"unknown method {chosen!r}; expected one of {list(LOT_METHODS)}", err=True)
         raise typer.Exit(code=2)
 
+    try:
+        window_end = date.fromisoformat(through) if through else date.today()
+    except ValueError as bad:
+        typer.echo(f"--through {through!r} is not YYYY-MM-DD", err=True)
+        raise typer.Exit(code=2) from bad
+
     engine = create_engine_and_tables(settings.database_url)
     try:
-        result = rebuild(engine, chosen)
+        result = rebuild(engine, chosen, through=window_end)
     except ChargeMismatch as mismatch:
         typer.echo(str(mismatch), err=True)
         raise typer.Exit(code=1) from mismatch
@@ -219,6 +249,167 @@ def rebuild_command(
         f"{result.method}: {result.lots} open lots, {result.closures} closures, "
         f"charges {result.charges_attributed} == ledger {result.charges_in_ledger}"
     )
+    typer.echo(
+        f"daily series: {result.position_days} position rows, "
+        f"{result.cash_days} cash days through {window_end.isoformat()}"
+    )
+
+
+#: Case 1 (M2 spec section 6): the resolver has nothing at all for this ISIN --
+#: go find an identifier, or route it to `manual_prices.csv`.
+_NO_IDENTIFIER = "the resolver returned no identifier for this ISIN"
+
+#: Case 2: the resolver offered tickers, but none of them has a price series
+#: under the price provider. This is NOT the same failure as case 1 -- an
+#: operator told "no ticker found" here would go hunting for an identifier
+#: they already have. The real cause is that the identifier provider
+#: (OpenFIGI) and the price provider (Yahoo) use different ticker namespaces
+#: for some listings, so the fix is a ticker the PRICE provider recognises,
+#: not another lookup against the identifier provider.
+_NAMESPACE_MISMATCH = (
+    "the identifier provider and the price provider use different ticker "
+    "namespaces for some listings"
+)
+
+
+def _report_symbol_quarantine(report: ResolutionReport, answers_path: Path) -> None:
+    """Print the open questions and a paste-ready answer for them.
+
+    The same shape as `_report_quarantine`, and for the same reason: an operator
+    retyping a key from memory produces an answer that parses cleanly and applies
+    to nothing. Here the key is the ISIN, and the evidence is the measured ratio
+    of their own executed prices against each candidate -- which is the only thing
+    that distinguishes the right ticker from a leveraged product on the same
+    underlying.
+
+    Three distinguishable cases, because the first two demand opposite
+    operator actions (M2 spec section 6): no candidates at all means go find
+    an identifier; candidates with no price series means answer with a
+    ticker the price provider actually knows. Conflating them sends the
+    operator looking for something they already have.
+    """
+    typer.echo(
+        f"{len(report.pending)} instrument(s) must be answered before prices can be fetched."
+    )
+    typer.echo(f"No prices were written. Add each ISIN to {answers_path} and run this again.\n")
+    for item in report.pending:
+        typer.echo(f"  {item.isin}  {item.product_name}  (trades in {item.trade_currency})")
+        if not item.probed:
+            typer.echo(f"      {_NO_IDENTIFIER}")
+            typer.echo(f"      answer with a ticker, or with {MANUAL_ANSWER!r}")
+        elif not item.verdicts:
+            named = ", ".join(item.probed)
+            typer.echo(f"      candidate ticker(s) offered but none has a price series: {named}")
+            typer.echo(f"      {_NAMESPACE_MISMATCH}")
+            typer.echo(
+                f"      answer with a ticker the price provider knows, or with {MANUAL_ANSWER!r}"
+            )
+        for verdict in item.verdicts:
+            ratios = ", ".join(f"{ratio:.2f}" for ratio in verdict.ratios) or "none measured"
+            typer.echo(f"      {verdict.symbol}: {verdict.reason}")
+            typer.echo(f"          executed price / provider close: {ratios}")
+    typer.echo("\nA correct ticker sits near 1.00 on every trade.")
+    typer.echo(f"Answer with a ticker, or with {MANUAL_ANSWER!r} to price it from the CSV.\n")
+    typer.echo("symbols:")
+    for item in report.pending:
+        typer.echo(f"  - isin: {item.isin}")
+        typer.echo("    symbol: ")
+
+
+@app.command("fetch-prices")
+def fetch_prices_command(
+    full: Annotated[
+        bool,
+        typer.Option(
+            "--full", help="Refetch the whole five-year history, not only what is missing."
+        ),
+    ] = False,
+) -> None:
+    """Fill the price and FX cache (M2 spec section 4).
+
+    Refuses, writing nothing, while any instrument's symbol is unanswered. Exits
+    1 on a refusal and 2 when a provider could not be reached, so this can gate a
+    script.
+    """
+    settings = get_settings()
+    answers_path = Path(settings.instrument_symbols_path)
+    engine = create_engine_and_tables(settings.database_url)
+
+    try:
+        result = fetch_prices(
+            engine,
+            build_providers(settings),
+            answers=load_symbol_answers(answers_path),
+            now=datetime.now(tz=UTC),
+            full=full,
+        )
+    except UnresolvedSymbols as refused:
+        _report_symbol_quarantine(refused.report, answers_path)
+        raise typer.Exit(code=1) from refused
+    except ProviderError as unreachable:
+        typer.echo(str(unreachable), err=True)
+        raise typer.Exit(code=2) from unreachable
+    except (MalformedManualPrices, MalformedSymbolAnswers) as malformed:
+        # Same exit code as the other "could not even start" failures above: an
+        # operator-edited file with a mistake in it is not a refusal to import
+        # (exit 1) and not a network failure (also exit 2, but a different
+        # cause) -- it is a file this command cannot trust, so nothing runs.
+        typer.echo(str(malformed), err=True)
+        raise typer.Exit(code=2) from malformed
+
+    breakdown = ", ".join(f"{name}={count}" for name, count in sorted(result.sources.items()))
+    typer.echo(
+        f"{result.instruments} instruments: {result.price_rows} price rows "
+        f"({breakdown or 'none'}), {result.fx_rows} FX rows"
+    )
+    if result.earliest is not None:
+        typer.echo(f"cache reaches back to {result.earliest.isoformat()}")
+
+    if result.resolution_notes:
+        # Visible, not silent: each of these was picked automatically among two
+        # or more venues that agreed with each other and with the ledger. The
+        # operator can override any of them by adding the ISIN to
+        # `instrument_symbols.yaml`.
+        typer.echo(
+            f"\nauto-resolved among several venues (override in {answers_path} if wrong):"
+        )
+        for isin, note in sorted(result.resolution_notes.items()):
+            typer.echo(f"  {isin}: {note}")
+
+
+@app.command("symbols")
+def symbols_command() -> None:
+    """Show the symbol review queue (M2 spec section 6.3).
+
+    Rebuilt by every `fetch-prices` run, so this always describes the export as
+    it stands rather than a history of what was once asked.
+    """
+    engine = create_engine_and_tables(get_settings().database_url)
+    with Session(engine) as session:
+        rows = session.exec(
+            select(SymbolReview).order_by(SymbolReview.isin)
+        ).all()
+
+    if not rows:
+        typer.echo("no unresolved symbols")
+        return
+
+    for row in rows:
+        typer.echo(f"OPEN  {row.isin}  {row.product_name}  ({row.trade_currency})")
+        payload = json.loads(row.candidates)
+        probed = payload["probed"]
+        verdicts = payload["verdicts"]
+        if not probed:
+            typer.echo(f"        {_NO_IDENTIFIER}")
+        elif not verdicts:
+            named = ", ".join(probed)
+            typer.echo(f"        candidate ticker(s) offered but none has a price series: {named}")
+            typer.echo(f"        {_NAMESPACE_MISMATCH}")
+        for candidate in verdicts:
+            ratios = ", ".join(candidate["ratios"]) or "none measured"
+            typer.echo(f"        {candidate['symbol']}: {candidate['reason']}  [{ratios}]")
+
+    typer.echo(f"\n{len(rows)} instrument(s) still open")
 
 
 if __name__ == "__main__":

@@ -199,3 +199,101 @@ class ClosureOut(BaseModel):
 class ClosurePage(Provenance):
     items: list[ClosureOut]
     total: int
+
+
+class ValuationPointOut(BaseModel):
+    """One day of the net portfolio value.
+
+    `value_base` and `holdings_base` are `None` -- not zero -- when a held
+    instrument could not be priced. Sec 8.1: a total that quietly dropped a
+    position looks exactly like a total that included it.
+    """
+
+    date: date
+    holdings_base: Decimal | None
+    cash_base: Decimal
+    value_base: Decimal | None
+    coverage: Coverage
+    #: The share of the day's holdings value that is fresh or hand-supplied.
+    #: `None` exactly when `coverage` is "missing": there is no total, so there
+    #: is no denominator to take a fraction of.
+    covered_pct: Decimal | None
+
+    @field_serializer("cash_base")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("holdings_base", "value_base", "covered_pct")
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class ValuationSeriesOut(Provenance):
+    """The daily series.
+
+    `method` is `None` on this envelope and that is a real answer, not a missing
+    one: no lot matching was applied, and M1 proved share counts are
+    method-independent. Filling it with the configured default would claim a
+    computation that never ran.
+    """
+
+    items: list[ValuationPointOut]
+    start: date | None
+    end: date | None
+    #: What the caller asked for, echoed back. With `clamped`, this is how the UI
+    #: can say "you asked for five years and the account is two years old"
+    #: instead of silently drawing a shorter chart.
+    requested_from: date | None
+    clamped: bool
+    base_currency: str
+
+
+class PositionOut(BaseModel):
+    isin: str
+    product_name: str
+    #: The currency the PRICE is quoted in, which is the one the coverage story
+    #: is about. It is normally the trade currency too; where a provider quotes
+    #: elsewhere the symbol would not have been accepted at all.
+    currency: str
+    quantity: Decimal
+    cost_basis: Decimal
+    charges_base: Decimal
+    price: Decimal | None
+    price_date: date | None
+    #: Which provider supplied the price. "manual" is what a reader needs to see
+    #: beside a figure somebody typed.
+    source: str | None
+    market_value_base: Decimal | None
+    gross_unrealised_base: Decimal | None
+    unrealised_base: Decimal | None
+    unrealised_pct: Decimal | None
+    coverage: Coverage
+
+    @field_serializer("quantity", "cost_basis", "charges_base")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer(
+        "price", "market_value_base", "gross_unrealised_base",
+        "unrealised_base", "unrealised_pct",
+    )
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)
+
+
+class PositionsOut(Provenance):
+    items: list[PositionOut]
+    as_of: date | None
+    total_cost_basis: Decimal
+    #: `None` when ANY position is unpriceable (Sec 8.1 at the aggregate level).
+    total_market_value_base: Decimal | None
+    total_unrealised_base: Decimal | None
+    base_currency: str
+
+    @field_serializer("total_cost_basis")
+    def _decimal_as_string(self, value: Decimal) -> str:
+        return str(value)
+
+    @field_serializer("total_market_value_base", "total_unrealised_base")
+    def _optional_decimal_as_string(self, value: Decimal | None) -> str | None:
+        return None if value is None else str(value)

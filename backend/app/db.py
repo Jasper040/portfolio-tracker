@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 import app.models.ledger  # noqa: F401  - registers tables on SQLModel.metadata
+import app.models.market  # noqa: F401  - the fetched-side cache tables
 
 
 def create_engine_and_tables(database_url: str) -> Engine:

@@ -37,7 +37,6 @@ Copy-Item ..\.env.example .env
 
 ```ini
 DATABASE_URL=sqlite:///./data/portfolio.sqlite
-BASE_CURRENCY=EUR
 LOT_METHOD=FIFO
 CORS_ORIGINS=http://localhost:5173
 ```

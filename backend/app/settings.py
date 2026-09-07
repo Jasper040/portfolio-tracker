@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str
-    base_currency: str = "EUR"
     lot_method: str = "FIFO"
     cors_origins: str = "http://localhost:5173"
     #: Where the operator's corporate-action answers live (design doc Sec 6.3).
@@ -34,6 +33,12 @@ class Settings(BaseSettings):
     #: reports the corporate actions as unanswered -- while the file sits there,
     #: answered, one directory up.
     corporate_actions_path: str = str(_REPO_ROOT / "config" / "corporate_actions.yaml")
+    #: The operator's symbol answers (M2 spec section 6.3). Ledger-adjacent and
+    #: gitignored for the same reason `corporate_actions.yaml` is: a key here is
+    #: an ISIN, which is a holding.
+    instrument_symbols_path: str = str(_REPO_ROOT / "config" / "instrument_symbols.yaml")
+    #: Hand-maintained prices for instruments no provider covers (parent doc Sec 8.2).
+    manual_prices_path: str = str(_REPO_ROOT / "config" / "manual_prices.csv")
 
     @property
     def cors_origin_list(self) -> list[str]:

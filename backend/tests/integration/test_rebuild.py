@@ -10,7 +10,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -23,7 +23,16 @@ from app.analytics.rebuild import ChargeMismatch, rebuild
 from app.db import create_engine_and_tables
 from app.domain.charges import Charges
 from app.ingest.importer import ensure_default_account, import_degiro_export
-from app.models.ledger import Account, ImportBatch, Lot, LotClosure, Transaction
+from app.models.ledger import (
+    Account,
+    CashDaily,
+    ImportBatch,
+    Lot,
+    LotClosure,
+    PositionDaily,
+    Transaction,
+)
+from app.models.market import FxDaily, PriceDaily
 
 GOLDEN = Path(__file__).parents[1] / "golden"
 
@@ -466,3 +475,147 @@ class TestSuppression:
             assert closure.pnl == closure.gross_pnl - (
                 closure.commission + closure.autofx + closure.tax
             )
+
+
+class TestDailySeries:
+    """`position_daily` and `cash_daily`: derived, deterministic, and no more.
+
+    The most important test in this class is the one that asserts what `rebuild()`
+    does NOT do. M2 spec section 4 splits the schema on the determinism line, and
+    a rebuild that quietly rewrote a fetched price would put the two halves back
+    together -- the same ledger rebuilt on two days would then produce different
+    rows from identical facts, and M1's determinism tests would be asserting
+    something false.
+    """
+
+    def test_writes_a_row_per_weekday_per_held_instrument(self, loaded: Engine) -> None:
+        rebuild(loaded, "FIFO")
+        with Session(loaded) as session:
+            rows = session.exec(select(PositionDaily)).all()
+        assert rows
+        assert all(row.position_date.weekday() < 5 for row in rows)
+
+    def test_writes_one_cash_balance_per_weekday(self, loaded: Engine) -> None:
+        rebuild(loaded, "FIFO")
+        with Session(loaded) as session:
+            days = [row.cash_date for row in session.exec(select(CashDaily)).all()]
+        assert len(days) == len(set(days))
+
+    def test_the_share_series_is_identical_under_every_method(self, loaded: Engine) -> None:
+        """The schema decision, proved rather than asserted in a comment. M1
+        showed share counts are method-independent; this shows the table that
+        drops the `method` column is entitled to."""
+        snapshots = {}
+        for method in ("FIFO", "LIFO", "HIFO"):
+            rebuild(loaded, method)
+            with Session(loaded) as session:
+                snapshots[method] = sorted(
+                    (row.position_date, row.isin, str(row.quantity))
+                    for row in session.exec(select(PositionDaily)).all()
+                )
+        assert snapshots["FIFO"] == snapshots["LIFO"] == snapshots["HIFO"]
+
+    def test_rebuilding_twice_produces_identical_rows(self, loaded: Engine) -> None:
+        def snapshot() -> list[tuple[date, str, str]]:
+            with Session(loaded) as session:
+                return sorted(
+                    (row.position_date, row.isin, str(row.quantity))
+                    for row in session.exec(select(PositionDaily)).all()
+                )
+
+        rebuild(loaded, "FIFO")
+        first = snapshot()
+        rebuild(loaded, "FIFO")
+        assert snapshot() == first
+
+    def test_replaces_rather_than_accumulates(self, loaded: Engine) -> None:
+        rebuild(loaded, "FIFO")
+        with Session(loaded) as session:
+            before = len(session.exec(select(PositionDaily)).all())
+        rebuild(loaded, "FIFO")
+        with Session(loaded) as session:
+            assert len(session.exec(select(PositionDaily)).all()) == before
+
+    def test_defaults_the_window_end_to_the_last_ledger_day(self, loaded: Engine) -> None:
+        """A default that read `date.today()` would make two rebuilds on two days
+        produce different tables from one ledger, which is precisely the property
+        M1 spends a whole test class on."""
+        with Session(loaded) as session:
+            last_trade = max(row.trade_date for row in session.exec(select(Transaction)).all())
+        rebuild(loaded, "FIFO")
+        with Session(loaded) as session:
+            assert max(row.cash_date for row in session.exec(select(CashDaily)).all()) == (
+                _last_weekday_on_or_before(last_trade)
+            )
+
+    def test_through_carries_the_series_past_the_last_trade(self, loaded: Engine) -> None:
+        """What the CLI passes. A position held for three months since the last
+        trade is still held, and a chart that stopped at the last trade would say
+        otherwise."""
+        with Session(loaded) as session:
+            last_trade = max(row.trade_date for row in session.exec(select(Transaction)).all())
+        later = last_trade + timedelta(days=30)
+        rebuild(loaded, "FIFO", through=later)
+        with Session(loaded) as session:
+            assert max(row.cash_date for row in session.exec(select(CashDaily)).all()) == (
+                _last_weekday_on_or_before(later)
+            )
+
+    def test_reports_what_it_wrote(self, loaded: Engine) -> None:
+        result = rebuild(loaded, "FIFO")
+        assert result.position_days > 0
+        assert result.cash_days > 0
+
+    def test_does_not_touch_the_price_cache(self, loaded: Engine) -> None:
+        """The determinism line, asserted. `rebuild()` is a function of the
+        ledger; a fetched price is not in the ledger, and a rebuild that dropped
+        one would silently require a network call to recover a chart.
+
+        Row count alone would pass an in-place update that left the row count
+        unchanged but rewrote a field -- e.g. a rebuild that innocently touched
+        and re-saved every cached row, silently changing `fetched_at` or a
+        close. Field values are asserted for exactly that reason.
+        """
+        seeded_at = datetime(2026, 9, 6, 12, 0, 0)
+        with Session(loaded) as session:
+            session.add(
+                PriceDaily(
+                    id=uuid4(),
+                    isin="NL0000000001",
+                    price_date=date(2025, 3, 3),
+                    close_unadjusted=Decimal("12.30"),
+                    close_adjusted=Decimal("11.80"),
+                    currency="EUR",
+                    source="yahoo",
+                    fetched_at=seeded_at,
+                )
+            )
+            session.add(
+                FxDaily(
+                    id=uuid4(),
+                    from_ccy="USD",
+                    to_ccy="EUR",
+                    rate_date=date(2025, 3, 3),
+                    rate=Decimal("1.04"),
+                    source="ecb",
+                    fetched_at=seeded_at,
+                )
+            )
+            session.commit()
+
+        rebuild(loaded, "FIFO")
+
+        with Session(loaded) as session:
+            prices = session.exec(select(PriceDaily)).all()
+            rates = session.exec(select(FxDaily)).all()
+            assert len(prices) == 1
+            assert len(rates) == 1
+            assert prices[0].close_unadjusted == Decimal("12.30")
+            assert prices[0].fetched_at == seeded_at
+            assert rates[0].rate == Decimal("1.04")
+
+
+def _last_weekday_on_or_before(day: date) -> date:
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day

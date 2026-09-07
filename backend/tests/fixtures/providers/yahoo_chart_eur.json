@@ -1,0 +1,22 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "EUR",
+          "symbol": "EXA.AS",
+          "exchangeName": "AMS",
+          "exchangeTimezoneName": "Europe/Amsterdam",
+          "gmtoffset": 3600,
+          "regularMarketPrice": 12.75
+        },
+        "timestamp": [1736150400, 1736236800, 1736323200],
+        "indicators": {
+          "quote": [{ "close": [12.5, null, 12.75] }],
+          "adjclose": [{ "adjclose": [12.2, null, 12.45] }]
+        }
+      }
+    ],
+    "error": null
+  }
+}

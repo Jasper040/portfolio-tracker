@@ -1,4 +1,11 @@
-import type { ClosurePage, LotMethodTag, LotPage, TransactionPage } from "./types";
+import type {
+  ClosurePage,
+  LotMethodTag,
+  LotPage,
+  PositionsPage,
+  TransactionPage,
+  ValuationSeries,
+} from "./types";
 
 // Falls back to the local dev API when VITE_API_BASE is not set, so the app keeps
 // working out of the box while still being deployable against a different backend.
@@ -54,4 +61,32 @@ export function fetchLots(method: LotMethodTag, query: LotQuery = {}): Promise<L
 
 export function fetchClosures(method: LotMethodTag, query: LotQuery = {}): Promise<ClosurePage> {
   return getPage<ClosurePage>("/api/closures", method, query);
+}
+
+export interface ValuationQuery {
+  /** ISO date. Omitted entirely for MAX, so the server answers from the first
+   *  day a position existed rather than from a start this client guessed. */
+  from?: string | null;
+  to?: string | null;
+}
+
+export async function fetchValuation(query: ValuationQuery = {}): Promise<ValuationSeries> {
+  const params = new URLSearchParams();
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  const suffix = params.toString() ? `?${params}` : "";
+
+  const response = await fetch(`${BASE}/api/valuation${suffix}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load valuation: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as ValuationSeries;
+}
+
+export async function fetchPositions(method: LotMethodTag): Promise<PositionsPage> {
+  const response = await fetch(`${BASE}/api/positions?method=${method}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load positions: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as PositionsPage;
 }
