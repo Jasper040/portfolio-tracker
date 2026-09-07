@@ -325,3 +325,39 @@ class TestFetchPrices:
 
     def test_symbols_says_so_when_nothing_is_waiting(self) -> None:
         assert runner.invoke(app, ["symbols"]).stdout.strip() == "no unresolved symbols"
+
+    def test_a_malformed_manual_prices_file_is_named_not_traced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The documented first run: copy `manual_prices.example.csv` to
+        `manual_prices.csv` and edit it. A mistake in that hand-edited file must
+        exit 2 with a message, exactly like a missing export file -- not an
+        uncaught `MalformedManualPrices` traceback."""
+        manual_path = tmp_path / "manual_prices.csv"
+        manual_path.write_text(
+            "isin,date,close,currency\nNL0000000001,2025-01-06,not-a-number,EUR\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("MANUAL_PRICES_PATH", str(manual_path))
+        get_settings.cache_clear()
+
+        result = runner.invoke(app, ["fetch-prices"])
+
+        assert result.exit_code == 2
+        assert "not-a-number" in result.stderr
+
+    def test_a_malformed_symbol_answers_file_is_named_not_traced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same guarantee as the manual-prices case above, for the other
+        hand-edited file this command reads before it does anything else."""
+        answers_path = tmp_path / "instrument_symbols.yaml"
+        answers_path.write_text("this: [is, not: valid", encoding="utf-8")
+        monkeypatch.setenv("INSTRUMENT_SYMBOLS_PATH", str(answers_path))
+        monkeypatch.setenv("MANUAL_PRICES_PATH", str(tmp_path / "absent-manual-prices.csv"))
+        get_settings.cache_clear()
+
+        result = runner.invoke(app, ["fetch-prices"])
+
+        assert result.exit_code == 2
+        assert str(answers_path) in result.stderr

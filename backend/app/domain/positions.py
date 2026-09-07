@@ -103,6 +103,24 @@ def _moves_euros(row: LedgerCashRow) -> bool:
     `test_lands_on_the_brokers_own_cash_balance` actually guards: an export
     that stopped tagging settlement conversions with an `order_ref` would turn
     that test red rather than mis-summing quietly.
+
+    **A known limitation, not a bug.** A foreign-currency trade bought from a
+    PRE-EXISTING foreign-currency balance -- rather than freshly converted from
+    EUR for the purpose -- carries no order-linked `FX_CONVERT` row at all,
+    because no conversion happened for it. Such a trade is NOT excluded by the
+    rule above: it is an ordinary trade row, so its `net_base` (`Total EUR`) is
+    COUNTED like any other trade's -- an earlier note in this project's own
+    working log described this shape as having its euro cost "dropped
+    entirely," which is the REJECTED currency-based-exclusion candidate's
+    behaviour (the second bullet above), not this one. Counting it here deducts
+    a euro-equivalent amount from `balance_base` for a transaction that never
+    actually spent EUR -- the money that moved was the pre-existing foreign
+    balance, not the EUR one, and that foreign balance is structurally
+    invisible to this module either way: `CashPoint` and `cash_daily` carry
+    only `balance_base`, the EUR balance, with no ledger of any other
+    currency's cash. Spec-compliant as implemented, and it has not occurred in
+    the owner's real export, so it is recorded here as a known limitation
+    rather than fixed.
     """
     return not (row.txn_type == _FX_CONVERT and row.order_ref is not None)
 

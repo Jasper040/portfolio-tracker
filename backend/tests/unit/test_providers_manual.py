@@ -84,6 +84,33 @@ class TestLoading:
         prices = ManualPrices.load(write(tmp_path, GOOD))
         assert prices.isins == frozenset({"NL0000000001", "US0000000404"})
 
+    def test_skips_comment_lines_right_after_the_header(self, tmp_path: Path) -> None:
+        """`manual_prices.example.csv` opens with `#`-prefixed explanatory lines
+        and tells the operator to copy it to `manual_prices.csv` and edit -- so
+        the file this loader meets on a first run carries them verbatim."""
+        body = (
+            "isin,date,close,currency\n"
+            "# Prices for instruments no provider covers.\n"
+            "# One row per instrument per day.\n"
+            "NL0000000001,2025-01-06,12.50,EUR\n"
+        )
+        prices = ManualPrices.load(write(tmp_path, body))
+        found = prices.series("NL0000000001")
+        assert found is not None
+        assert [p.close_unadjusted for p in found.points] == [D("12.50")]
+
+    def test_skips_a_comment_line_that_follows_data_rows(self, tmp_path: Path) -> None:
+        body = (
+            "isin,date,close,currency\n"
+            "NL0000000001,2025-01-06,12.50,EUR\n"
+            "# a stray note left in the middle of the file\n"
+            "NL0000000001,2025-01-07,12.75,EUR\n"
+        )
+        prices = ManualPrices.load(write(tmp_path, body))
+        found = prices.series("NL0000000001")
+        assert found is not None
+        assert [p.close_unadjusted for p in found.points] == [D("12.50"), D("12.75")]
+
 class TestRejections:
     @pytest.mark.parametrize(
         ("body", "fragment"),

@@ -25,10 +25,12 @@ from app.analytics.valuation import (
     MANUAL,
     MISSING,
     PARTIAL,
+    STALE_DAYS,
     current_positions,
     value_series,
 )
 from app.db import create_engine_and_tables
+from app.domain.symbols import NEAR_DAYS
 from app.models.ledger import Account, CashDaily, ImportBatch, Lot, PositionDaily, Transaction
 from app.models.market import FxDaily, PriceDaily
 
@@ -349,6 +351,23 @@ class TestCoverage:
         seed.held(MON, A, "10").cash(MON, "0.00")
         seed.held(TUE, B, "5").cash(TUE, "0.00")
         assert value_series(engine).coverage == MISSING
+
+
+def test_stale_days_and_near_days_agree_on_how_old_fresh_may_be() -> None:
+    """`valuation.STALE_DAYS` (above, driving `PARTIAL`) and
+    `domain.symbols.NEAR_DAYS` (the split-adjustment join's own four-day
+    carry-forward) are the same idea under two names: a weekend plus one
+    holiday is how far a price may be carried before it stops counting as
+    fresh. Their docstrings already say they mean the same thing, but nothing
+    outside this test enforced it.
+
+    Neither module may import the other -- `domain/` takes no dependency on
+    `analytics/`, in either direction (Sec 4.1's layering) -- so the two
+    constants cannot share a definition. This test is the enforcement that a
+    shared import cannot be: change one without the other and half the app
+    means something different by "fresh" than the other half does, silently.
+    """
+    assert STALE_DAYS == NEAR_DAYS
 
 
 class TestWindow:

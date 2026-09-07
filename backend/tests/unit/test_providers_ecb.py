@@ -118,8 +118,14 @@ class TestFailures:
     def test_refuses_a_pair_that_does_not_reach_the_base_currency(self) -> None:
         """Frankfurter is queried with EUR as the base, so it can only answer
         pairs ending in EUR. Asking for USD->AUD would silently return
-        EUR-denominated numbers under the wrong label."""
-        with pytest.raises(ValueError, match="EUR"):
+        EUR-denominated numbers under the wrong label.
+
+        `ProviderError`, not a bare `ValueError`: a non-EUR `Account.base_currency`
+        reaches this in normal operation, and only `ProviderError` is caught by
+        `fetch_prices_command`'s existing handler, which exits 2 with the
+        message instead of letting this escape as a traceback.
+        """
+        with pytest.raises(ProviderError, match="EUR"):
             EcbRates(client_returning(fixture())).series(
                 "USD", "AUD", start=date(2025, 1, 6), end=date(2025, 1, 8)
             )

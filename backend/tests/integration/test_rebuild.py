@@ -569,7 +569,14 @@ class TestDailySeries:
     def test_does_not_touch_the_price_cache(self, loaded: Engine) -> None:
         """The determinism line, asserted. `rebuild()` is a function of the
         ledger; a fetched price is not in the ledger, and a rebuild that dropped
-        one would silently require a network call to recover a chart."""
+        one would silently require a network call to recover a chart.
+
+        Row count alone would pass an in-place update that left the row count
+        unchanged but rewrote a field -- e.g. a rebuild that innocently touched
+        and re-saved every cached row, silently changing `fetched_at` or a
+        close. Field values are asserted for exactly that reason.
+        """
+        seeded_at = datetime(2026, 9, 6, 12, 0, 0)
         with Session(loaded) as session:
             session.add(
                 PriceDaily(
@@ -580,7 +587,7 @@ class TestDailySeries:
                     close_adjusted=Decimal("11.80"),
                     currency="EUR",
                     source="yahoo",
-                    fetched_at=datetime(2026, 9, 6, 12, 0, 0),
+                    fetched_at=seeded_at,
                 )
             )
             session.add(
@@ -591,7 +598,7 @@ class TestDailySeries:
                     rate_date=date(2025, 3, 3),
                     rate=Decimal("1.04"),
                     source="ecb",
-                    fetched_at=datetime(2026, 9, 6, 12, 0, 0),
+                    fetched_at=seeded_at,
                 )
             )
             session.commit()
@@ -599,8 +606,13 @@ class TestDailySeries:
         rebuild(loaded, "FIFO")
 
         with Session(loaded) as session:
-            assert len(session.exec(select(PriceDaily)).all()) == 1
-            assert len(session.exec(select(FxDaily)).all()) == 1
+            prices = session.exec(select(PriceDaily)).all()
+            rates = session.exec(select(FxDaily)).all()
+            assert len(prices) == 1
+            assert len(rates) == 1
+            assert prices[0].close_unadjusted == Decimal("12.30")
+            assert prices[0].fetched_at == seeded_at
+            assert rates[0].rate == Decimal("1.04")
 
 
 def _last_weekday_on_or_before(day: date) -> date:

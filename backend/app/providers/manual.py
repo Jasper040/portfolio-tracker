@@ -56,7 +56,19 @@ class ManualPrices:
                 raise MalformedManualPrices(
                     f"{path}: header must be exactly {','.join(_COLUMNS)}"
                 )
-            rows = [row for row in reader if any(cell.strip() for cell in row)]
+            # `#`-prefixed rows are comments, skipped wherever they fall -- not just
+            # a leading block. This file is hand-edited, unlike the YAML beside it
+            # (`corporate_actions.yaml`), which gets comments for free from its
+            # format; a CSV needs the loader to grant the same courtesy explicitly.
+            # Every other rejection below stays exactly as strict as it was: a
+            # manual price is the one number in this app with no cross-check, so
+            # nothing past the comment convention gets a pass for being merely
+            # plausible.
+            rows = [
+                row
+                for row in reader
+                if any(cell.strip() for cell in row) and not row[0].strip().startswith("#")
+            ]
 
         points: dict[str, dict[date, PricePoint]] = {}
         currencies: dict[str, str] = {}

@@ -20,7 +20,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str
-    base_currency: str = "EUR"
     lot_method: str = "FIFO"
     cors_origins: str = "http://localhost:5173"
     #: Where the operator's corporate-action answers live (design doc Sec 6.3).

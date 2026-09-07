@@ -291,9 +291,17 @@ class TestChoosingBetweenCandidates:
     def test_reports_a_verdict_for_every_candidate_in_the_order_given(self) -> None:
         """The quarantine shows the operator what was tried and what each
         measured. A rejected candidate that vanished silently would leave them
-        answering a question with no evidence attached."""
+        answering a question with no evidence attached.
+
+        Both orderings are asserted: `[WRONG, RIGHT]` alone would coincidentally
+        pass a bug that sorted verdicts rejected-first, since that happens to be
+        the order already given. `[RIGHT, WRONG]` is the case that catches it.
+        """
         verdicts = judge([self.WRONG, self.RIGHT], self.TRADES, [])
         assert [v.symbol for v in verdicts] == ["EXA2S.DE", "EXA.AS"]
+
+        reversed_verdicts = judge([self.RIGHT, self.WRONG], self.TRADES, [])
+        assert [v.symbol for v in reversed_verdicts] == ["EXA.AS", "EXA2S.DE"]
 
     def test_two_agreeing_venues_resolve_to_the_one_closest_to_parity(self) -> None:
         """Two listings of the same instrument on two venues both pass, and

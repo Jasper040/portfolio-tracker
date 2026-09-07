@@ -9,7 +9,6 @@ def test_settings_reads_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./test.sqlite")
     s = Settings()
     assert s.database_url == "sqlite:///./test.sqlite"
-    assert s.base_currency == "EUR"
     assert s.lot_method == "FIFO"
 
 

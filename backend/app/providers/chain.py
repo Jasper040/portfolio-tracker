@@ -41,16 +41,45 @@ class PriceChain:
         Returns `None` when nothing can answer. Not an exception and not an empty
         series: `None` is what the caller turns into `coverage: "missing"`, and a
         day it touches is valued `null` rather than short.
+
+        **Why an empty series is treated differently depending on `since`.**
+        There are two distinct things a provider can mean by "no points here",
+        and they must not be conflated:
+
+        * On a full fetch (`since is None`), an empty series means this symbol
+          has NO series at all -- nothing has ever been published for it, or
+          the provider does not recognise the ticker. That is exactly the case
+          the manual file exists to answer, so it is not treated as an answer:
+          the loop keeps trying other providers, and falls through to
+          `self._manual` if none of them have anything either.
+        * On an incremental fetch (`since` is a date), an empty series from a
+          provider that otherwise returned (i.e. did not answer `None`) means
+          this symbol has NOTHING NEW since `since` -- the cache is already
+          current. That is a real, complete answer, not an absence, and it must
+          be returned as-is rather than falling through to the manual file.
+          `ManualPrices.series` ignores `since` entirely and returns the whole
+          CSV; treating an empty incremental result as "no answer" would upsert
+          that whole history over the cached provider rows on every run with
+          nothing new, rewriting `source` to `"manual"` and flipping already-
+          fresh days from `full` coverage to `manual` for no reason at all.
+
+        Only a bare `None` from the provider -- meaning it does not know the
+        symbol, full stop -- justifies falling through, in either case.
         """
         if symbol is not None:
             for provider in self._providers:
-                found = (
-                    provider.full_series(symbol)
-                    if since is None
-                    else provider.series_since(symbol, since)
-                )
-                # An empty series is not an answer. Accepting it would leave the
-                # instrument unpriced with no fallback attempted.
-                if found is not None and found.points:
-                    return found
+                if since is None:
+                    found = provider.full_series(symbol)
+                    # An empty full series is not an answer. Accepting it would
+                    # leave the instrument unpriced with no fallback attempted.
+                    if found is not None and found.points:
+                        return found
+                else:
+                    found = provider.series_since(symbol, since)
+                    if found is not None:
+                        # Empty here means "nothing new since `since`", not
+                        # "this symbol has no series" -- see the docstring
+                        # above. Return it as the real answer it is; do not
+                        # fall through to the manual file.
+                        return found
         return self._manual.series(isin)

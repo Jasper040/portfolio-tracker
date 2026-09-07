@@ -125,3 +125,57 @@ class TestIncremental:
         )
         assert provider.since_calls == [("EXA.AS", date(2025, 6, 1))]
         assert provider.full_calls == []
+
+    def test_an_incremental_empty_series_is_the_answer_not_a_fallthrough(
+        self, tmp_path: Path
+    ) -> None:
+        """F2: an empty series on a full fetch means "no series at all" -- the
+        manual file's case. On an incremental fetch it means "nothing new since
+        `since`", which is a real answer. Falling through to the manual file
+        here would upsert its whole history over the cached provider rows,
+        rewriting `source` to "manual" and flipping fresh days to `coverage:
+        "manual"`.
+
+        The manual file here is built so it WOULD answer for `NL0000000001` if
+        consulted -- the assertion that `source` is the provider's, not
+        `"manual"`, is only meaningful if the manual file was capable of
+        answering and simply was not asked.
+        """
+        empty = Stub("empty", {"EXA.AS": PriceSeries("EXA.AS", "EUR", "empty", ())})
+        manual_path = tmp_path / "manual_prices.csv"
+        manual_path.write_text(
+            "isin,date,close,currency\nNL0000000001,2025-01-06,12.50,EUR\n",
+            encoding="utf-8",
+        )
+        manual = ManualPrices.load(manual_path)
+        chain = PriceChain([empty], manual)
+
+        found = chain.series("NL0000000001", "EXA.AS", since=date(2025, 6, 1))
+
+        assert found is not None
+        assert found.source == "empty"
+        assert found.points == ()
+
+    def test_an_incremental_fetch_still_falls_through_a_provider_that_knows_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A bare `None` from the provider -- it does not recognise the symbol
+        at all -- is the one case that still justifies the manual fallback,
+        even incrementally."""
+        chain = PriceChain([Stub("empty", {})], manual_file(tmp_path))
+
+        found = chain.series("US0000000404", "EXA.AS", since=date(2025, 6, 1))
+
+        assert found is not None and found.source == "manual"
+
+    def test_a_full_fetch_empty_series_still_falls_through_to_manual(
+        self, tmp_path: Path
+    ) -> None:
+        """The `since=None` behaviour from `TestOrder` above, unchanged: this is
+        the guard the F2 fix must not touch."""
+        hollow = Stub("hollow", {"EXA.AS": PriceSeries("EXA.AS", "EUR", "hollow", ())})
+        chain = PriceChain([hollow], manual_file(tmp_path))
+
+        found = chain.series("US0000000404", "EXA.AS", since=None)
+
+        assert found is not None and found.source == "manual"

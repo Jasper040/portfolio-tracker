@@ -44,7 +44,13 @@ class EcbRates:
         self, from_ccy: str, to_ccy: str, *, start: date, end: date
     ) -> FxSeries | None:
         if to_ccy != _BASE:
-            raise ValueError(
+            # `ProviderError`, not a bare `ValueError`: `fetch_prices` passes
+            # whatever base currency the `Account` row carries, so a non-EUR
+            # account reaches this branch in normal operation, not only in a
+            # test. The CLI's `fetch_prices_command` already catches
+            # `ProviderError` and exits 2 with the message; a `ValueError`
+            # here would escape as an uncaught traceback instead.
+            raise ProviderError(
                 f"frankfurter is queried with {_BASE} as its base, so it cannot answer "
                 f"{from_ccy}->{to_ccy}; a rate to anything but {_BASE} would be a "
                 "different number under this label"

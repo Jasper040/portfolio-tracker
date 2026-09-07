@@ -26,10 +26,16 @@ from app.ingest.importer import (
 )
 from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_prices
 from app.ingest.reconcile import reconcile
-from app.ingest.symbols import MANUAL_ANSWER, ResolutionReport, load_symbol_answers
+from app.ingest.symbols import (
+    MANUAL_ANSWER,
+    MalformedSymbolAnswers,
+    ResolutionReport,
+    load_symbol_answers,
+)
 from app.models.ledger import CorporateActionReview, ImportBatch
 from app.models.market import SymbolReview
 from app.providers.base import ProviderError
+from app.providers.manual import MalformedManualPrices
 from app.settings import get_settings
 
 app = typer.Typer(help="Portfolio tracker maintenance commands.")
@@ -343,6 +349,13 @@ def fetch_prices_command(
     except ProviderError as unreachable:
         typer.echo(str(unreachable), err=True)
         raise typer.Exit(code=2) from unreachable
+    except (MalformedManualPrices, MalformedSymbolAnswers) as malformed:
+        # Same exit code as the other "could not even start" failures above: an
+        # operator-edited file with a mistake in it is not a refusal to import
+        # (exit 1) and not a network failure (also exit 2, but a different
+        # cause) -- it is a file this command cannot trust, so nothing runs.
+        typer.echo(str(malformed), err=True)
+        raise typer.Exit(code=2) from malformed
 
     breakdown = ", ".join(f"{name}={count}" for name, count in sorted(result.sources.items()))
     typer.echo(
