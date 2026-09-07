@@ -103,6 +103,28 @@ def test_a_second_run_writes_nothing_new(engine) -> None:
         assert len(session.exec(select(BenchmarkDaily)).all()) == 2
 
 
+def test_a_revised_bar_updates_the_stored_row_instead_of_being_skipped(engine) -> None:
+    """The whole point of the incremental fetch re-asking for dates already in
+    the cache is that a provider-revised bar gets corrected. Skipping every
+    date already present (rather than upserting it) would make that overlap
+    dead cost -- a revision would be fetched and then silently discarded.
+    """
+    provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
+    fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+
+    revised = series((date(2026, 9, 4), "999.00", "888.00"))
+    provider.known["AAA.XX"] = revised
+    second = fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+
+    assert second.rows_written == 0
+    with Session(engine) as session:
+        rows = session.exec(select(BenchmarkDaily)).all()
+    assert len(rows) == 2
+    revised_row = next(r for r in rows if r.price_date == date(2026, 9, 4))
+    assert revised_row.close_unadjusted == D("999.00")
+    assert revised_row.close_adjusted == D("888.00")
+
+
 def test_the_second_run_is_incremental(engine) -> None:
     provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
     fetch_benchmarks(engine, provider, [WORLD], today=TODAY)

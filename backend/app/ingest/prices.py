@@ -395,28 +395,40 @@ def fetch_benchmarks(
             continue
 
         with Session(engine) as session:
-            have = {
-                row.price_date
+            # Upsert, exactly like `_store_prices`: a revised bar within the
+            # overlap window must correct the stored row rather than being
+            # silently discarded, or the overlap the provider pays for buys
+            # nothing.
+            existing = {
+                row.price_date: row
                 for row in session.exec(
                     select(BenchmarkDaily).where(BenchmarkDaily.key == bench.key)
                 ).all()
             }
+            fetched_at = datetime.now(tz=UTC)
             for point in series.points:
-                if point.on in have:
-                    continue
-                session.add(
-                    BenchmarkDaily(
-                        id=uuid4(),
-                        key=bench.key,
-                        price_date=point.on,
-                        close_unadjusted=point.close_unadjusted,
-                        close_adjusted=point.close_adjusted,
-                        currency=series.currency.upper(),
-                        source=provider.__class__.__name__,
-                        fetched_at=datetime.now(tz=UTC),
+                row = existing.get(point.on)
+                if row is None:
+                    session.add(
+                        BenchmarkDaily(
+                            id=uuid4(),
+                            key=bench.key,
+                            price_date=point.on,
+                            close_unadjusted=point.close_unadjusted,
+                            close_adjusted=point.close_adjusted,
+                            currency=series.currency.upper(),
+                            source=series.source,
+                            fetched_at=fetched_at,
+                        )
                     )
-                )
-                written += 1
+                    written += 1
+                else:
+                    row.close_unadjusted = point.close_unadjusted
+                    row.close_adjusted = point.close_adjusted
+                    row.currency = series.currency.upper()
+                    row.source = series.source
+                    row.fetched_at = fetched_at
+                    session.add(row)
             session.commit()
         fetched.append(bench.key)
 
