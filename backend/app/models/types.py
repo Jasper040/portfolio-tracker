@@ -22,9 +22,16 @@ the ledger itself.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import Dialect, String, TypeDecorator
+
+#: How much of the requested data an answer could actually account for (design
+#: doc Sec 8.1). Defined here rather than in `api/schemas.py` so `analytics/`
+#: can enforce the invariant without importing from the API layer -- nothing
+#: under analytics/, domain/, ingest/ or providers/ depends on app.api, and
+#: this type is not a reason to start.
+Coverage = Literal["missing", "partial", "manual", "full"]
 
 
 class DecimalString(TypeDecorator[Decimal]):

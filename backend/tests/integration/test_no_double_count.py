@@ -191,6 +191,7 @@ def test_the_read_side_modules_exist_so_this_is_not_vacuous() -> None:
     modules = _read_side_modules()
     assert modules
     assert any(path.name == "valuation.py" for path in modules)
+    assert any(path.name == "prices.py" for path in modules)
     assert any(path.name == "total_return.py" for path in modules)
 
 def test_the_exempt_set_names_files_that_actually_exist() -> None:
@@ -217,9 +218,23 @@ def test_no_read_side_module_names_both_closes() -> None:
         "a dividend gets counted twice: " + ", ".join(both)
     )
 
-def test_valuation_reads_only_the_unadjusted_close() -> None:
-    names = _identifiers(APP / "analytics" / "valuation.py")
+def test_the_price_reader_reads_only_the_unadjusted_close() -> None:
+    """Was `test_valuation_reads_only_the_unadjusted_close` until M3 split
+    `valuation.py`. Re-pointed rather than deleted, and deliberately so: after
+    the split `valuation.py` names neither column, so the old assertion would
+    still have passed -- vacuously, having quietly lost the half that checks the
+    column is present SOMEWHERE. An assertion that passes for a new reason is
+    not the same assertion."""
+    names = _identifiers(APP / "analytics" / "prices.py")
     assert UNADJUSTED in names
+    assert ADJUSTED not in names
+
+
+def test_valuation_no_longer_names_a_close_column_directly() -> None:
+    """It reads through `prices.py` now. Asserted so a future edit that inlines
+    a column read back into `valuation.py` has to argue with a test."""
+    names = _identifiers(APP / "analytics" / "valuation.py")
+    assert UNADJUSTED not in names
     assert ADJUSTED not in names
 
 def test_total_return_reads_only_the_adjusted_close() -> None:

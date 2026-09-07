@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, field_serializer
 
 from app.models.ledger import Lot, LotClosure, Transaction
+from app.models.types import Coverage
 
 #: Which lot-matching method produced the realised figures in a response.
 #: `None` is a real answer, not a missing one: it means no matching was applied,
@@ -28,8 +29,9 @@ LotMethod = Literal["FIFO", "LIFO", "HIFO"]
 
 #: How much of the requested data the response could actually account for
 #: (design doc Sec 8.1). Anything short of "full" means the UI must render "no data"
-#: rather than a zero, and aggregates must say how much they cover.
-Coverage = Literal["missing", "partial", "manual", "full"]
+#: rather than a zero, and aggregates must say how much they cover. Defined in
+#: `app.models.types` (imported above), not here, so `analytics/` can share the
+#: same Literal without importing the API layer -- see that module for why.
 
 
 class Provenance(BaseModel):
