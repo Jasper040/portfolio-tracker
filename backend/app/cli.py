@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from app.analytics.rebuild import ChargeMismatch, rebuild
 from app.db import create_engine_and_tables
 from app.domain.lots import LOT_METHODS
+from app.ingest.benchmarks import load_benchmarks
 from app.ingest.corporate_actions import CorporateAction
 from app.ingest.degiro.account_csv import parse_account_csv
 from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
@@ -24,7 +25,7 @@ from app.ingest.importer import (
     import_degiro_export,
     undo_batch,
 )
-from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_prices
+from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_benchmarks, fetch_prices
 from app.ingest.reconcile import reconcile
 from app.ingest.symbols import (
     MANUAL_ANSWER,
@@ -375,6 +376,24 @@ def fetch_prices_command(
         )
         for isin, note in sorted(result.resolution_notes.items()):
             typer.echo(f"  {isin}: {note}")
+
+    # Last, deliberately: a wrong symbol in benchmarks.yaml must not cost the
+    # instrument phase its five-year backfill (M3 section 4.4).
+    benchmarks = load_benchmarks(Path(settings.benchmarks_path))
+    bench_report = fetch_benchmarks(
+        engine, build_providers(settings).prices, benchmarks, full=full, today=date.today()
+    )
+    if benchmarks:
+        typer.echo(
+            f"Benchmarks: {len(bench_report.fetched)} fetched, "
+            f"{bench_report.rows_written} rows written."
+        )
+    for key, reason in bench_report.failed:
+        # Not a quarantine entry: the file already asked the question. See
+        # M3 section 4.4.
+        typer.echo(f"  benchmark {key!r} failed -- {reason}", err=True)
+    if bench_report.failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("symbols")
