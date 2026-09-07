@@ -249,6 +249,23 @@ def rebuild_command(
     )
 
 
+#: Case 1 (M2 spec section 6): the resolver has nothing at all for this ISIN --
+#: go find an identifier, or route it to `manual_prices.csv`.
+_NO_IDENTIFIER = "the resolver returned no identifier for this ISIN"
+
+#: Case 2: the resolver offered tickers, but none of them has a price series
+#: under the price provider. This is NOT the same failure as case 1 -- an
+#: operator told "no ticker found" here would go hunting for an identifier
+#: they already have. The real cause is that the identifier provider
+#: (OpenFIGI) and the price provider (Yahoo) use different ticker namespaces
+#: for some listings, so the fix is a ticker the PRICE provider recognises,
+#: not another lookup against the identifier provider.
+_NAMESPACE_MISMATCH = (
+    "the identifier provider and the price provider use different ticker "
+    "namespaces for some listings"
+)
+
+
 def _report_symbol_quarantine(report: ResolutionReport, answers_path: Path) -> None:
     """Print the open questions and a paste-ready answer for them.
 
@@ -258,6 +275,12 @@ def _report_symbol_quarantine(report: ResolutionReport, answers_path: Path) -> N
     of their own executed prices against each candidate -- which is the only thing
     that distinguishes the right ticker from a leveraged product on the same
     underlying.
+
+    Three distinguishable cases, because the first two demand opposite
+    operator actions (M2 spec section 6): no candidates at all means go find
+    an identifier; candidates with no price series means answer with a
+    ticker the price provider actually knows. Conflating them sends the
+    operator looking for something they already have.
     """
     typer.echo(
         f"{len(report.pending)} instrument(s) must be answered before prices can be fetched."
@@ -265,8 +288,16 @@ def _report_symbol_quarantine(report: ResolutionReport, answers_path: Path) -> N
     typer.echo(f"No prices were written. Add each ISIN to {answers_path} and run this again.\n")
     for item in report.pending:
         typer.echo(f"  {item.isin}  {item.product_name}  (trades in {item.trade_currency})")
-        if not item.verdicts:
-            typer.echo("      no candidate ticker was found at all")
+        if not item.probed:
+            typer.echo(f"      {_NO_IDENTIFIER}")
+            typer.echo(f"      answer with a ticker, or with {MANUAL_ANSWER!r}")
+        elif not item.verdicts:
+            named = ", ".join(item.probed)
+            typer.echo(f"      candidate ticker(s) offered but none has a price series: {named}")
+            typer.echo(f"      {_NAMESPACE_MISMATCH}")
+            typer.echo(
+                f"      answer with a ticker the price provider knows, or with {MANUAL_ANSWER!r}"
+            )
         for verdict in item.verdicts:
             ratios = ", ".join(f"{ratio:.2f}" for ratio in verdict.ratios) or "none measured"
             typer.echo(f"      {verdict.symbol}: {verdict.reason}")
@@ -352,7 +383,16 @@ def symbols_command() -> None:
 
     for row in rows:
         typer.echo(f"OPEN  {row.isin}  {row.product_name}  ({row.trade_currency})")
-        for candidate in json.loads(row.candidates):
+        payload = json.loads(row.candidates)
+        probed = payload["probed"]
+        verdicts = payload["verdicts"]
+        if not probed:
+            typer.echo(f"        {_NO_IDENTIFIER}")
+        elif not verdicts:
+            named = ", ".join(probed)
+            typer.echo(f"        candidate ticker(s) offered but none has a price series: {named}")
+            typer.echo(f"        {_NAMESPACE_MISMATCH}")
+        for candidate in verdicts:
             ratios = ", ".join(candidate["ratios"]) or "none measured"
             typer.echo(f"        {candidate['symbol']}: {candidate['reason']}  [{ratios}]")
 

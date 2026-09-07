@@ -82,11 +82,23 @@ class SymbolAnswer:
 
 @dataclass(frozen=True, slots=True)
 class PendingSymbol:
-    """One instrument still waiting on a human, with the evidence attached."""
+    """One instrument still waiting on a human, with the evidence attached.
+
+    `probed` and `verdicts` answer two different questions, and the gap
+    between them is the point. `probed` is every candidate symbol the
+    resolver offered, whether or not it ever got a price series. `verdicts`
+    is a verdict per candidate that had a series to judge -- so it can be
+    shorter than `probed`, and the difference is meaningful: `probed` empty
+    means the resolver knows nothing about this ISIN; `probed` non-empty with
+    `verdicts` empty means tickers were offered but none of them has a price
+    series at all, which is a different problem with a different fix (M2
+    spec section 6).
+    """
 
     isin: str
     product_name: str
     trade_currency: str
+    probed: tuple[str, ...]
     verdicts: tuple[Verdict, ...]
 
 
@@ -259,9 +271,8 @@ def resolve_symbols(
 
         trades = by_isin[isin]
         for_this: Sequence[Split] = [s for s in splits if s.isin == isin]
-        verdicts = judge(
-            _candidate_series(candidates_by_isin.get(isin, ()), prices), trades, for_this
-        )
+        candidates = candidates_by_isin.get(isin, ())
+        verdicts = judge(_candidate_series(candidates, prices), trades, for_this)
 
         chosen = accepted_symbol(verdicts)
         if chosen is not None:
@@ -276,6 +287,7 @@ def resolve_symbols(
                 isin=isin,
                 product_name=names.get(isin, ""),
                 trade_currency=trades[0].currency if trades else "",
+                probed=tuple(candidate.symbol for candidate in candidates),
                 verdicts=verdicts,
             )
         )
@@ -283,19 +295,31 @@ def resolve_symbols(
     return ResolutionReport(resolved=resolved, pending=tuple(pending), auto_resolved=auto_resolved)
 
 
-def _as_json(verdicts: Sequence[Verdict]) -> str:
+def _as_json(item: PendingSymbol) -> str:
+    """The evidence for one pending instrument, as the review row stores it.
+
+    `probed` carries every candidate the resolver offered, so `symbols`
+    (M2 spec section 6.3) can distinguish "the resolver found nothing" from
+    "candidates were found but none had a price series" the same way the
+    `fetch-prices` refusal does -- the two demand opposite operator actions,
+    and this row is the only record either view reads from.
+    """
     return json.dumps(
-        [
-            {
-                "symbol": verdict.symbol,
-                "accepted": verdict.accepted,
-                "reason": verdict.reason,
-                # Strings, not floats: a ratio is money-derived and the operator
-                # is reading it to decide, so it must be the number measured.
-                "ratios": [str(ratio) for ratio in verdict.ratios],
-            }
-            for verdict in verdicts
-        ]
+        {
+            "probed": list(item.probed),
+            "verdicts": [
+                {
+                    "symbol": verdict.symbol,
+                    "accepted": verdict.accepted,
+                    "reason": verdict.reason,
+                    # Strings, not floats: a ratio is money-derived and the
+                    # operator is reading it to decide, so it must be the
+                    # number measured.
+                    "ratios": [str(ratio) for ratio in verdict.ratios],
+                }
+                for verdict in item.verdicts
+            ],
+        }
     )
 
 
@@ -319,7 +343,7 @@ def write_symbol_review(
                     isin=item.isin,
                     product_name=item.product_name,
                     trade_currency=item.trade_currency,
-                    candidates=_as_json(item.verdicts),
+                    candidates=_as_json(item),
                     detected_at=detected_at,
                 )
             )

@@ -28,6 +28,7 @@ def pending(isin: str) -> PendingSymbol:
         isin=isin,
         product_name="Example Holdings",
         trade_currency="EUR",
+        probed=("EXA2S.DE",),
         verdicts=(
             Verdict(
                 symbol="EXA2S.DE",
@@ -66,11 +67,29 @@ def test_keeps_the_candidates_and_their_ratios_readable() -> None:
     )
     with Session(engine) as session:
         row = session.exec(select(SymbolReview)).one()
-    candidates = json.loads(row.candidates)
-    assert candidates[0]["symbol"] == "EXA2S.DE"
-    assert candidates[0]["accepted"] is False
-    assert candidates[0]["ratios"] == ["3.33", "4.80"]
-    assert OUT_OF_BAND in candidates[0]["reason"]
+    payload = json.loads(row.candidates)
+    verdicts = payload["verdicts"]
+    assert verdicts[0]["symbol"] == "EXA2S.DE"
+    assert verdicts[0]["accepted"] is False
+    assert verdicts[0]["ratios"] == ["3.33", "4.80"]
+    assert OUT_OF_BAND in verdicts[0]["reason"]
+
+
+def test_the_probed_symbols_survive_into_the_stored_rows_json() -> None:
+    """`symbols` (M2 spec section 6.3) needs to tell "the resolver found
+    nothing" apart from "candidates were found but none had a price series",
+    the same distinction the `fetch-prices` refusal draws -- and this row's
+    JSON is the only place that view reads from."""
+    engine = create_engine_and_tables("sqlite://")
+    write_symbol_review(
+        engine,
+        ResolutionReport(resolved={}, pending=(pending("NL0000000001"),)),
+        detected_at=DETECTED,
+    )
+    with Session(engine) as session:
+        row = session.exec(select(SymbolReview)).one()
+    payload = json.loads(row.candidates)
+    assert payload["probed"] == ["EXA2S.DE"]
 
 
 def test_a_rerun_replaces_the_queue_rather_than_appending_to_it() -> None:

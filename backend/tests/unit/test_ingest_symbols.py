@@ -242,6 +242,10 @@ class TestResolution:
         assert not verdict.accepted
 
     def test_quarantines_an_instrument_with_no_candidates_at_all(self) -> None:
+        """The resolver offered nothing: `probed` and `verdicts` are both
+        empty. That is the "go find an identifier, or route to manual" case,
+        distinct from a candidate that was offered but had no price series
+        (M2 spec section 6)."""
         report = resolve_symbols(
             self.TRADES,
             answers={},
@@ -249,6 +253,8 @@ class TestResolution:
             prices=StubPrices({}),
         )
         assert [p.isin for p in report.pending] == ["NL0000000001"]
+        assert report.pending[0].probed == ()
+        assert report.pending[0].verdicts == ()
 
     def test_an_answered_instrument_is_never_probed(self) -> None:
         """A human already decided. Asking a provider anyway would spend a call
@@ -305,7 +311,14 @@ class TestResolution:
         """Judging it instead would report NO_CLOSE_NEAR_TRADE, which reads as
         "the wrong instrument" when the truth is "nothing came back at all" --
         and the operator would be sent hunting for a ticker that does not
-        exist."""
+        exist.
+
+        `probed` still names the candidate the resolver offered, even though
+        it never got judged: that is what lets the caller tell "the resolver
+        found nothing" apart from "a ticker was found but Yahoo has no price
+        series for it" (M2 spec section 6) -- the ticker was offered, so
+        `probed` is not empty, but nothing could be judged, so `verdicts` is.
+        """
         prices = StubPrices({})
         report = resolve_symbols(
             self.TRADES,
@@ -315,6 +328,7 @@ class TestResolution:
         )
         assert prices.asked == ["EXA.AS"]
         assert [p.isin for p in report.pending] == ["NL0000000001"]
+        assert report.pending[0].probed == ("EXA.AS",)
         assert report.pending[0].verdicts == ()
 
     def test_a_candidate_with_a_series_but_no_points_is_dropped_too(self) -> None:
@@ -328,6 +342,7 @@ class TestResolution:
         )
         assert prices.asked == ["EXA.AS"]
         assert [p.isin for p in report.pending] == ["NL0000000001"]
+        assert report.pending[0].probed == ("EXA.AS",)
         assert report.pending[0].verdicts == ()
 
     def test_carries_the_split_ratio_into_the_check(self) -> None:
