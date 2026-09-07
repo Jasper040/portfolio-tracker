@@ -259,5 +259,13 @@ export interface InstrumentSummary {
 export interface Benchmark {
   key: string;
   name: string;
+  /** Total expense ratio as a PERCENTAGE PER YEAR: `"0.20"` means 0.20%/yr,
+   *  not 20% and not a fraction. Same unit as `config/benchmarks.yaml` and
+   *  `BenchmarkOut.ter` -- reading it as a fraction renders the proxy's drag
+   *  100x too small, which is why the unit is written down on all three.
+   *
+   *  Render it with `decimal(ter, 2, 2)`, never `decimalPercent`: that helper
+   *  shifts the point two places because it takes a RATIO, and this is already
+   *  a percentage. */
   ter: string;
 }

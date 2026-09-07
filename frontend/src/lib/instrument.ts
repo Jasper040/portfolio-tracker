@@ -95,6 +95,13 @@ function reindexOnDates(
   return dates.map((date) => byDate.get(date) ?? null);
 }
 
+/** What the right-hand axis measures. The benchmark overlay is a REBASED
+ *  INDEX, drawn on its own independently auto-scaled axis against the
+ *  instrument's raw price on the left -- and two independently scaled series
+ *  always look like they track each other. Naming the axis (and the legend
+ *  below) is what stops the dashed line reading as a second price. */
+export const BENCHMARK_AXIS_NAME = "index, 100 = entry";
+
 function benchmarkSeries(comparison: Comparison, dates: readonly string[]) {
   return {
     name: comparison.benchmark_key,
@@ -152,9 +159,28 @@ export function instrumentChartOption(
 
   const comparison = chart.comparison;
 
+  const benchmarkName =
+    opts.showBenchmark && comparison !== null ? comparison.benchmark_key : null;
+
   return {
     animation: false,
-    grid: { left: 64, right: 64, top: 16, bottom: 44 },
+    // `top` leaves room for the legend rather than letting it sit over the
+    // plot: an overlapped legend is worse than none, because it reads as part
+    // of the data.
+    grid: { left: 64, right: 64, top: 34, bottom: 44 },
+    // Named series, so the reader can tell which line is the price and which
+    // is the rebased index. Without it the dashed overlay is an unlabelled
+    // second line on an unlabelled second scale.
+    legend: {
+      data: benchmarkName === null ? [chart.isin] : [chart.isin, benchmarkName],
+      top: 0,
+      left: 0,
+      itemGap: 14,
+      icon: "roundRect",
+      itemWidth: 14,
+      itemHeight: 2,
+      textStyle: { color: c.textFaint, fontSize: 10 },
+    },
     xAxis: {
       type: "category",
       data: dates,
@@ -171,6 +197,11 @@ export function instrumentChartOption(
       {
         type: "value",
         scale: true,
+        // The overlay is an INDEX, not a price. See `BENCHMARK_AXIS_NAME`.
+        name: BENCHMARK_AXIS_NAME,
+        nameLocation: "end" as const,
+        nameGap: 12,
+        nameTextStyle: { color: c.textFaint, fontSize: 9.5, align: "right" as const },
         axisLabel: { color: c.textFaint, fontSize: 10 },
         splitLine: { show: false },
       },
