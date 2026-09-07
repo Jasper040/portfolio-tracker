@@ -1,0 +1,189 @@
+"""The instrument chart: one instrument's priced line, plus an optional
+benchmark comparison (M3 Task 7).
+
+This route composes `analytics/instrument_price.py` (Sec 5.2, the price side)
+and `analytics/instrument_return.py` (Sec 5.3, the comparison side) and
+computes nothing of its own -- `test_no_double_count.py`'s
+`test_the_instrument_route_reaches_both_modules_but_names_neither_column`
+checks that by name. Reading `close_unadjusted` or `close_adjusted` directly
+here would give this route a second, competing way to answer a question the
+two analytics modules already answer once each.
+
+The two modules deliberately do not know about each other (see both of their
+module docstrings), so this file is the one place allowed to reach both: it
+passes `instrument_price_view(...)`'s own `Interval` tuple straight into
+`comparison(...)`, which accepts it structurally through `HoldingInterval`
+without importing the concrete type.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import date, timedelta
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import Engine
+from sqlmodel import Session, select
+
+from app.analytics.instrument_price import instrument_price_view
+from app.analytics.instrument_return import HoldingInterval
+from app.analytics.instrument_return import comparison as compute_comparison
+from app.api.routes_transactions import get_engine
+from app.api.schemas import (
+    BenchmarkListOut,
+    BenchmarkOut,
+    ComparisonOut,
+    IndexPointOut,
+    InstrumentChartOut,
+    IntervalExcessOut,
+    IntervalOut,
+    MarkerOut,
+    PricePointOut,
+)
+from app.ingest.benchmarks import Benchmark
+from app.models.ledger import Transaction
+
+router = APIRouter(prefix="/api", tags=["instrument"])
+
+#: What the `range` query parameter accepts. Validated by FastAPI/pydantic off
+#: this Literal, the same way `LotMethod` validates `/api/positions?method=`.
+ChartRange = Literal["1Y", "3Y", "5Y", "max"]
+
+#: Calendar days to look back for each fixed range. `max` is handled
+#: separately -- see `_window`.
+_RANGE_DAYS: dict[str, int] = {"1Y": 365, "3Y": 365 * 3, "5Y": 365 * 5}
+
+
+def get_benchmarks(request: Request) -> tuple[Benchmark, ...]:
+    """Wired onto `app.state` at construction time -- the same seam as
+    `get_engine`, and for the same reason: production wiring keeps a seam
+    tests can use instead of FastAPI's `dependency_overrides`."""
+    benchmarks: tuple[Benchmark, ...] = request.app.state.benchmarks
+    return benchmarks
+
+
+def _earliest_trade_date(engine: Engine, isin: str) -> date | None:
+    """The first day this ISIN was ever traded, or `None` if it never was.
+
+    Doubles as the existence check (an ISIN the ledger never traded is
+    "unknown" for this endpoint) and as the anchor for `range=max`: the
+    instrument's own inception, not an arbitrary constant.
+    """
+    with Session(engine) as session:
+        row = session.exec(
+            select(Transaction)
+            .where(Transaction.isin == isin)
+            .order_by(Transaction.trade_date)  # type: ignore[arg-type]
+            .limit(1)
+        ).first()
+    return row.trade_date if row is not None else None
+
+
+def _window(chart_range: str, earliest: date, today: date) -> tuple[date, date]:
+    if chart_range == "max":
+        return earliest, today
+    return today - timedelta(days=_RANGE_DAYS[chart_range]), today
+
+
+def _comparison_out(
+    engine: Engine,
+    isin: str,
+    benchmark_key: str,
+    intervals: Sequence[HoldingInterval],
+) -> ComparisonOut:
+    result = compute_comparison(
+        engine, isin, benchmark_key=benchmark_key, intervals=intervals
+    )
+    return ComparisonOut(
+        basis=result.basis,
+        benchmark_key=result.benchmark_key,
+        instrument_index=[
+            IndexPointOut(date=p.on, index=p.index) for p in result.instrument_index
+        ],
+        benchmark_index=[
+            IndexPointOut(date=p.on, index=p.index) for p in result.benchmark_index
+        ],
+        intervals=[
+            IntervalExcessOut(
+                start=row.start,
+                end=row.end,
+                instrument_return=row.instrument_return,
+                benchmark_return=row.benchmark_return,
+                excess=row.excess,
+                reason=row.reason,
+            )
+            for row in result.intervals
+        ],
+        linked_instrument_return=result.linked_instrument_return,
+        linked_benchmark_return=result.linked_benchmark_return,
+        linked_excess=result.linked_excess,
+        coverage=result.coverage,
+    )
+
+
+@router.get("/instruments/{isin}/chart", response_model=InstrumentChartOut)
+def get_instrument_chart(
+    isin: str,
+    engine: Engine = Depends(get_engine),
+    benchmarks: tuple[Benchmark, ...] = Depends(get_benchmarks),
+    range: ChartRange = Query(default="1Y"),
+    benchmark: str | None = Query(default=None),
+) -> InstrumentChartOut:
+    earliest = _earliest_trade_date(engine, isin)
+    if earliest is None:
+        raise HTTPException(status_code=404, detail=f"no instrument traded with ISIN {isin!r}")
+
+    configured = {b.key: b for b in benchmarks}
+    if benchmark is not None and benchmark not in configured:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unknown benchmark {benchmark!r}; configured benchmarks are "
+                f"{sorted(configured)}"
+            ),
+        )
+
+    start, end = _window(range, earliest, date.today())
+    view = instrument_price_view(engine, isin, start=start, end=end)
+
+    comparison_out = (
+        _comparison_out(engine, isin, benchmark, view.intervals)
+        if benchmark is not None
+        else None
+    )
+
+    return InstrumentChartOut(
+        isin=view.isin,
+        points=[
+            PricePointOut(
+                date=p.on, close_base=p.close_base, coverage=p.coverage, held=p.held
+            )
+            for p in view.points
+        ],
+        intervals=[
+            IntervalOut(
+                start=i.start, end=i.end, in_market=i.in_market, price_return=i.price_return
+            )
+            for i in view.intervals
+        ],
+        markers=[
+            MarkerOut(
+                date=m.on, side=m.side, quantity=m.quantity, price=m.price,
+                fees=m.fees, position_after=m.position_after,
+            )
+            for m in view.markers
+        ],
+        comparison=comparison_out,
+        method=None,
+        coverage=view.coverage,
+    )
+
+
+@router.get("/benchmarks", response_model=BenchmarkListOut)
+def list_benchmarks(
+    benchmarks: tuple[Benchmark, ...] = Depends(get_benchmarks),
+) -> BenchmarkListOut:
+    return BenchmarkListOut(
+        items=[BenchmarkOut(key=b.key, name=b.name, ter=b.ter) for b in benchmarks]
+    )
