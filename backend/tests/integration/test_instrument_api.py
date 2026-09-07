@@ -6,10 +6,13 @@ envelope (`method: null`, every `Decimal` as a string, an `IntervalExcess`'s
 window sizing, unknown-ISIN vs. unknown-benchmark error codes, and drawing a
 chart with no benchmark at all.
 
-Dates are relative to `date.today()`, not hardcoded, because the route itself
-anchors its window on `date.today()` (same convention as `cli.py`'s
-`window_end`): a fixed calendar date would drift out of the `range=1Y` window
-the day the suite is run a year later.
+Dates are relative to `date.today()`, not hardcoded, purely so the fixtures
+stay inside whichever `range` window they are meant to exercise no matter when
+the suite runs. The route itself does NOT read the wall clock: it anchors a
+chart's right edge on the instrument's own newest `price_daily` row (same
+convention as `analytics/valuation.py`'s `window_end = end or
+cash_rows[-1].cash_date`, one level down) so a lagging price fetch never turns
+into a run of `close_base: null` days at the end of the line.
 """
 
 from __future__ import annotations
@@ -188,7 +191,13 @@ class TestOmittingBenchmark:
 class TestRangeWindow:
     def test_max_reaches_further_back_than_1y(self) -> None:
         engine = create_engine_and_tables("sqlite://")
-        Seed(engine).traded(OLD_TRADE)
+        seed = Seed(engine)
+        seed.traded(OLD_TRADE)
+        # A recent priced day anchors the window's right edge (see the module
+        # docstring). Without one, both ranges fall back to `OLD_TRADE` itself
+        # -- `max` degenerates to a single day and the invariant below is
+        # vacuous rather than exercised.
+        seed.priced(HELD_END)
         client = TestClient(create_app(engine=engine, benchmarks=BENCHMARKS))
 
         one_year = client.get(f"/api/instruments/{ISIN}/chart?range=1Y").json()
@@ -202,6 +211,23 @@ class TestRangeWindow:
         client = _basic_client()
         resp = client.get(f"/api/instruments/{ISIN}/chart?range=10Y")
         assert resp.status_code == 422
+
+
+class TestWindowAnchor:
+    def test_the_last_point_is_priced_not_a_run_of_nulls(self) -> None:
+        """`_basic_client` prices the instrument only up to `HELD_END`, five
+        days before `TODAY` (the wall clock at suite-run time) -- exactly the
+        lag Fix 1 exists for. The window's right edge must follow the data:
+        anchoring on `date.today()` instead would put the last five days of
+        the default `range=1Y` window past any price, and the chart would end
+        in a run of `close_base: null` rather than on the last priced day.
+        """
+        client = _basic_client()
+        body = client.get(f"/api/instruments/{ISIN}/chart").json()
+
+        last_point = body["points"][-1]
+        assert last_point["date"] == HELD_END.isoformat()
+        assert last_point["close_base"] is not None
 
 
 class TestMoneyOnTheWire:
@@ -239,8 +265,13 @@ class TestMoneyOnTheWire:
         assert isinstance(comparison["instrument_index"][0]["index"], str)
         assert isinstance(comparison["benchmark_index"][0]["index"], str)
         row = comparison["intervals"][0]
+        # This fixture is a fully covered interval on both sides -- unlike
+        # `TestExcessReason` below -- so all three fields must actually be
+        # populated. `None or isinstance(..., str)` would pass even if a
+        # regression dropped all three to `None`.
         for field in ("instrument_return", "benchmark_return", "excess"):
-            assert row[field] is None or isinstance(row[field], str)
+            assert row[field] is not None
+            assert isinstance(row[field], str)
 
 
 class TestExcessReason:

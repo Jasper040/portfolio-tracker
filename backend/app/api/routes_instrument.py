@@ -43,6 +43,7 @@ from app.api.schemas import (
 )
 from app.ingest.benchmarks import Benchmark
 from app.models.ledger import Transaction
+from app.models.market import PriceDaily
 
 router = APIRouter(prefix="/api", tags=["instrument"])
 
@@ -80,10 +81,34 @@ def _earliest_trade_date(engine: Engine, isin: str) -> date | None:
     return row.trade_date if row is not None else None
 
 
-def _window(chart_range: str, earliest: date, today: date) -> tuple[date, date]:
+def _latest_priced_day(engine: Engine, isin: str) -> date | None:
+    """The most recent day this ISIN actually has a price for -- the anchor
+    for the right edge of every range, `None` if it has never been priced.
+
+    Not `date.today()`. `analytics/valuation.py`'s `window_end = end or
+    cash_rows[-1].cash_date` anchors on the newest row actually in hand, never
+    on the wall clock, and `routes_valuation.py` adds no wall-clock fallback of
+    its own -- this route follows the same convention one level down, at the
+    instrument rather than the ledger. A price fetch that lags "today" by a
+    weekend, a holiday, or simply an un-run job would otherwise leave the
+    window's trailing days `close_base: None` for the whole lag, and the chart
+    would end in a gap that looks broken instead of ending on the last day it
+    actually has data for.
+    """
+    with Session(engine) as session:
+        row = session.exec(
+            select(PriceDaily)
+            .where(PriceDaily.isin == isin)
+            .order_by(PriceDaily.price_date.desc())  # type: ignore[attr-defined]
+            .limit(1)
+        ).first()
+    return row.price_date if row is not None else None
+
+
+def _window(chart_range: str, earliest: date, anchor: date) -> tuple[date, date]:
     if chart_range == "max":
-        return earliest, today
-    return today - timedelta(days=_RANGE_DAYS[chart_range]), today
+        return earliest, anchor
+    return anchor - timedelta(days=_RANGE_DAYS[chart_range]), anchor
 
 
 def _comparison_out(
@@ -144,7 +169,8 @@ def get_instrument_chart(
             ),
         )
 
-    start, end = _window(range, earliest, date.today())
+    anchor = _latest_priced_day(engine, isin) or earliest
+    start, end = _window(range, earliest, anchor)
     view = instrument_price_view(engine, isin, start=start, end=end)
 
     comparison_out = (
