@@ -62,6 +62,50 @@ def test_an_isin_shaped_key_is_refused(tmp_path: Path) -> None:
         load_benchmarks(path)
 
 
+def test_an_isin_embedded_in_a_longer_slug_is_refused(tmp_path: Path) -> None:
+    """The gap the whole-key check left open. `benchmark-nl0000000001` IS a
+    valid slug -- lowercase letters, digits and hyphens -- so `_SLUG` passed it
+    and an anchored ISIN match saw only "not an ISIN".
+
+    The backstop did not hold either: `test_no_real_data_committed.py` matched
+    ISINs case-sensitively while `_SLUG` forces lowercase, so a lowercase ISIN
+    inside a slug cleared the loader AND the scanner. `_check_key` is the
+    entire justification for `config/benchmarks.yaml` being the one tracked
+    file in `config/`, so it has to refuse the substring, not just the whole
+    string.
+    """
+    path = write(
+        tmp_path,
+        """
+        benchmark-nl0000000001:
+          symbol: AAA.XX
+          currency: EUR
+          name: Nope
+          ter: "0.20"
+        """,
+    )
+    with pytest.raises(BenchmarkConfigError, match="looks like an ISIN"):
+        load_benchmarks(path)
+
+
+def test_an_ordinary_hyphenated_slug_is_still_accepted(tmp_path: Path) -> None:
+    """The substring check must not swallow the keys people actually write.
+    Hyphens break the run of alphanumerics an ISIN needs, which is why the slug
+    charset was kept narrow in the first place."""
+    path = write(
+        tmp_path,
+        """
+        broad-world-acc-2:
+          symbol: AAA.XX
+          currency: EUR
+          name: A broad world proxy
+          ter: "0.20"
+        """,
+    )
+    (bench,) = load_benchmarks(path)
+    assert bench.key == "broad-world-acc-2"
+
+
 def test_a_key_outside_the_slug_alphabet_is_refused(tmp_path: Path) -> None:
     path = write(
         tmp_path,

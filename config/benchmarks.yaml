@@ -6,8 +6,10 @@
 # against the ledger's own executed prices, and a benchmark was never traded,
 # so there is nothing to check it against. Whatever symbol you write is used.
 #
-# Keys must be lowercase slugs. An ISIN-shaped key is refused at load: an ISIN
-# in a tracked file is a holding, and this file is tracked.
+# Keys must be lowercase slugs. Anything ISIN-shaped ANYWHERE in a key is
+# refused at load -- not just a key that is entirely an ISIN -- because an ISIN
+# in a tracked file is a holding, and this file is tracked. A hyphen breaks the
+# run of letters and digits an ISIN needs, so ordinary keys are unaffected.
 #
 # `ter` is the proxy's total expense ratio in percent per year. It is reported
 # beside the comparison, never subtracted from it -- adjusting would invent a
