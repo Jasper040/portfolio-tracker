@@ -53,7 +53,7 @@ Confirmed by the owner on 2026-09-07.
 | M3-2 | Benchmark series live in their **own `benchmark_daily` table, keyed by a configuration slug and never by ISIN**, so `config/benchmarks.yaml` is tracked. Reasoning in section 4.1. |
 | M3-3 | The instrument-vs-benchmark comparison is **total return on both sides**, computed from the dividend-adjusted close, labelled as such, and never presented as TWR. |
 | M3-4 | M3 ships a **new live `Instrument` screen**. The modelled `StockDetail` stays untouched under its `MODELLED` badge until M4 and M5 fill its remaining sections, then retires. |
-| M3-5 | `analytics/valuation.py` **splits three ways** and `coverage` becomes the `Coverage` Literal on its dataclasses — the two findings carried out of M2, fixed in the milestone that opens the file. |
+| M3-5 | `analytics/valuation.py` **splits four ways** and `coverage` becomes the `Coverage` Literal on its dataclasses — the two findings carried out of M2, fixed in the milestone that opens the file. The cut between `quotes.py` and `prices.py` is what keeps M3-3 enforceable; see section 5.1. |
 | M3-6 | Rebasing happens **at the start of each in-market interval**, not at the left edge of the visible window. Reasoning in section 5.3. |
 | M3-7 | Both sides of every comparison are converted to the **base currency before rebasing**. Reasoning in section 5.3. |
 
@@ -95,10 +95,21 @@ premise. It splits the work instead:
   rebased indices and the excess return.
 - **The route composes the two** and reads neither column itself.
 
-The test gains an assertion rather than losing one: neither new module may reach the
-other's column, and the composing route may reach neither directly. A guard that has to be
-loosened the first time a real feature meets it was measuring the wrong thing; this one
-was not.
+The test gains assertions rather than losing one. It already walks all of `app/` and
+subtracts a named exempt set — its own docstring names "M3's instrument chart" as the
+case that design anticipates — so the two new modules are covered the moment they exist,
+with no edit. What must be added is the call-path half, which is specific by nature:
+`instrument_return` may not reach `analytics.prices`, and `instrument_price` may not
+reach `analytics.total_return`.
+
+One existing assertion has to move rather than be deleted.
+`test_valuation_reads_only_the_unadjusted_close` names `valuation.py`, and after the
+section 5.1 split that file no longer names the column — the assertion would pass
+vacuously in the "not present" direction while silently losing the "is present"
+direction. It re-points at `analytics/prices.py`, which is where the column went.
+
+A guard that has to be loosened the first time a real feature meets it was measuring the
+wrong thing; this one was not.
 
 ---
 
@@ -194,11 +205,24 @@ independent readers over four shared private helpers, and recorded that the natu
 to split it is "when M3 next touches it". M3 touches it: the instrument line needs the same
 carry-forward and FX helpers that valuation does. Three ways:
 
-| New file | Holds |
-|---|---|
-| `analytics/quotes.py` | `_Quote`, the price and rate histories, both `_latest_on_or_before` readers, `_in_base`, `_classify`, `worst_coverage` |
-| `analytics/valuation.py` | `value_series` and `_value_day` |
-| `analytics/positions_snapshot.py` | `current_positions` |
+| New file | Holds | Names a close column? |
+|---|---|---|
+| `analytics/quotes.py` | `Quote`, `base_currency`, the rate history, `latest_rate_on_or_before`, `in_base`, `classify`, `worst_coverage` | **Neither** |
+| `analytics/prices.py` | `price_history`, `latest_on_or_before`, `quote_for` | `close_unadjusted` only |
+| `analytics/valuation.py` | `value_series` and `_value_day` | Neither, after the split |
+| `analytics/positions_snapshot.py` | `current_positions` | Neither |
+
+The cut between the first two files is load-bearing rather than cosmetic, and the
+existing code already permits it: `Quote` carries a field named `close`, not
+`close_unadjusted`, so only `quote_for` names the column. That lets
+`instrument_return.py` import the FX and coverage machinery for M3-7's currency
+conversion **without acquiring a call path to the unadjusted close** — which a single
+merged `quotes.py` would have handed it, quietly defeating section 3.2 through the back
+door. The same property is what lets `instrument_return.py` build a `Quote` from an
+adjusted close and reuse `in_base` unchanged.
+
+The helpers shared across modules lose their leading underscore in the move; the ones
+that stay private to one file keep it.
 
 While those files are open, `coverage: str` becomes the `Coverage` Literal on all four
 dataclasses — the other carried finding, and the reason it was carried was that nothing had
@@ -343,7 +367,7 @@ Coverage target 80%+, `domain/` higher, as §11.3 requires.
    fallback is to report per-interval excess only and leave the aggregate to M6 — a smaller
    claim, at the cost of the screen having no single answer to "was this worth owning".
 2. **M3's real-data acceptance will skip exactly as M2's nine do** until the outstanding
-   symbol question in `docs/M2-FOLLOW-UPS.md` item 1 is answered. Same operator step, not a
+   symbol question in **PT-10** is answered. Same operator step, not a
    new one; noted so a green run with skips is not mistaken for a green run.
 3. **The benchmark set is fixed and its TER drag is not modelled**, only documented, as
    §7.6 requires. A proxy underperforms its own index by roughly its TER, so a holding that
@@ -351,7 +375,7 @@ Coverage target 80%+, `domain/` higher, as §11.3 requires.
    documented figure rather than an adjustment, because adjusting would invent a series
    nobody published.
 4. **`frontend/src/portfolio/fixtures.ts` still carries real ISINs.** Pre-existing, carried
-   from M2's follow-ups, and untouched by M3 — but M3 is the milestone that makes the
+   from M2's follow-ups as **PT-19**, and untouched by M3 — but M3 is the milestone that makes the
    modelled instrument screen redundant, so the cheapest moment to replace them is when
    `StockDetail` retires after M5.
 
