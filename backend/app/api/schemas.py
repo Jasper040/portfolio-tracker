@@ -362,6 +362,15 @@ class IntervalExcessOut(BaseModel):
     """One in-market interval's excess return against the benchmark. Maps
     `IntervalExcess`.
 
+    `excess` is the ARITHMETIC difference, `instrument_return -
+    benchmark_return`, and not the geometric form `(1 + i) / (1 + b) - 1`. The
+    two answers diverge as returns grow, and a reader comparing this figure
+    against one computed elsewhere has no other way to know which they are
+    holding -- `basis` says "total_return", which labels how each RETURN was
+    constructed and says nothing about how they were DIFFERENCED. Stated here
+    because `analytics/instrument_return.py`'s docstring, where the choice was
+    made, is not something a wire consumer ever reads.
+
     `reason` is present exactly when `excess` is `None`. The instrument's own
     span shortfall never reaches a coverage badge -- see `ComparisonOut.coverage`
     -- so it surfaces only here; dropping this field on the wire would make a
@@ -383,6 +392,16 @@ class IntervalExcessOut(BaseModel):
 class ComparisonOut(BaseModel):
     """The instrument against one benchmark, both as total-return indices.
     Maps `Comparison`.
+
+    `linked_excess` is the ARITHMETIC difference of the two chain-linked
+    returns, matching `IntervalExcessOut.excess` -- see there for why. It has
+    to: a geometric per-interval excess does not chain into an arithmetic
+    summary, so mixing the two would make this figure disagree with the rows it
+    summarises.
+
+    `basis` labels the RETURN construction (total return, dividends included),
+    never the differencing. Both are worth stating and only one of them fits in
+    a field.
 
     `coverage` is the BENCHMARK's span coverage, not the instrument's own --
     see `Comparison.coverage`'s docstring for why the two are a different
@@ -469,6 +488,12 @@ class BenchmarkOut(BaseModel):
 
     key: str
     name: str
+    #: Total expense ratio, as a PERCENTAGE PER YEAR -- `"0.20"` means 0.20%/yr,
+    #: not 20% and not a fraction. The unit is stated here because it is the
+    #: only place a client sees it: `ingest/benchmarks.py` and the YAML header
+    #: both say percent, and a client that read it as a fraction would render
+    #: the proxy's drag 100x too small. Reported beside the comparison, never
+    #: subtracted from it -- adjusting would invent a series nobody published.
     ter: Decimal
 
     @field_serializer("ter")
@@ -476,5 +501,16 @@ class BenchmarkOut(BaseModel):
         return str(value)
 
 
-class BenchmarkListOut(BaseModel):
+class BenchmarkListOut(Provenance):
+    """The configured benchmark set.
+
+    Inherits `Provenance` like every other top-level envelope -- see this
+    module's own docstring on why that is a required field rather than a
+    convention, and `InstrumentListOut` for the same two answers. `method` is
+    `None`: nothing was lot-matched, this is a config listing. `coverage` is
+    always `"full"`: every row is the operator's own answer in
+    `config/benchmarks.yaml`, and nothing here depends on an external series
+    that could be missing.
+    """
+
     items: list[BenchmarkOut]

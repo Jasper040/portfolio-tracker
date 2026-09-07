@@ -320,5 +320,7 @@ def list_benchmarks(
     benchmarks: tuple[Benchmark, ...] = Depends(get_benchmarks),
 ) -> BenchmarkListOut:
     return BenchmarkListOut(
-        items=[BenchmarkOut(key=b.key, name=b.name, ter=b.ter) for b in benchmarks]
+        items=[BenchmarkOut(key=b.key, name=b.name, ter=b.ter) for b in benchmarks],
+        method=None,
+        coverage="full",
     )

@@ -346,6 +346,33 @@ class TestFetchPrices:
         assert result.exit_code == 2
         assert "not-a-number" in result.stderr
 
+    def test_a_malformed_benchmarks_file_is_named_not_traced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The third hand-edited config this command reads, and the one M3 has
+        just told the operator to write by hand. It has to fail like its two
+        siblings above -- exit 2 with the message -- not with a raw traceback
+        out of `load_benchmarks`.
+
+        Caught late on purpose: the benchmark file is read after the instrument
+        phase has already written its rows, so a mistake in it costs the
+        operator a message, never the five-year backfill.
+        """
+        benchmarks_path = tmp_path / "benchmarks.yaml"
+        benchmarks_path.write_text(
+            "Not A Slug:\n  symbol: AAA.XX\n  currency: EUR\n  name: n\n  ter: '0.20'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BENCHMARKS_PATH", str(benchmarks_path))
+        monkeypatch.setenv("MANUAL_PRICES_PATH", str(tmp_path / "absent-manual-prices.csv"))
+        monkeypatch.setenv("INSTRUMENT_SYMBOLS_PATH", str(tmp_path / "absent-symbols.yaml"))
+        get_settings.cache_clear()
+
+        result = runner.invoke(app, ["fetch-prices"])
+
+        assert result.exit_code == 2
+        assert "Not A Slug" in result.stderr
+
     def test_a_malformed_symbol_answers_file_is_named_not_traced(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

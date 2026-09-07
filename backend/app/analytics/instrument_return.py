@@ -246,11 +246,9 @@ def _span_coverage(
     window = [p for p in points if start <= p.on <= end]
     if not window:
         return MISSING
-    # Named `opening_gap`/`closing_gap` rather than the obvious pair: one of
-    # those words is a distinctive token in a real holding's name, and
-    # `test_no_real_data_committed.py` matches those case-insensitively against
-    # every tracked file. An underscore is a word character, so a compound name
-    # does not trip the scanner.
+    # Compound names, so no local variable here can collide with the leak
+    # scanner's token list: it matches whole words case-insensitively, and an
+    # underscore is a word character.
     opening_gap = (window[0].on - start).days
     closing_gap = (end - window[-1].on).days
     return (
