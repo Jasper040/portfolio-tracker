@@ -64,10 +64,45 @@ function markerPoint(marker: Marker) {
   };
 }
 
-function inMarketBand(
+/** The extent a holding band is actually DRAWN over, clamped to the axis.
+ *  `null` when the interval and the window do not overlap at all.
+ *
+ *  The x-axis is a CATEGORY axis whose `data` is exactly the drawn dates, so a
+ *  `markArea` bound to a date the axis does not carry cannot be resolved:
+ *  ECharts returns `undefined` from `OrdinalMeta.getOrdinal`, `clampData` turns
+ *  that into `NaN`, and the polygon is emitted with NaN corners. The canvas
+ *  renderer drops those `moveTo`/`lineTo` calls and the fill collapses to zero
+ *  area -- silently, with no error, so the band simply is not there.
+ *
+ *  That is not a hypothetical. `intervals` is deliberately NOT clipped to the
+ *  requested window, because an interval must carry its REAL entry date or the
+ *  rebasing anchor moves every time the reader touches the range control. So on
+ *  the default 1Y view, every position opened more than a year ago had an
+ *  off-axis band start, drew nothing, and read as "never held" beside a
+ *  subtitle promising "solid where held, blank where flat" (PT-29).
+ *
+ *  The clamp belongs HERE and not in the response. `excessFor` joins excess
+ *  rows to intervals on `start`/`end`, so clipping the interval data itself
+ *  would blank every excess cell -- trading a drawing bug for a data one.
+ *  Drawn extent and interval identity are different things, and only the first
+ *  one is the axis's business.
+ *
+ *  Selecting from `dates` rather than computing a min and a max means the
+ *  endpoints are always real categories, in axis order, by construction. It
+ *  also covers the second failure mode for free: an interval boundary that
+ *  falls on a day the axis has no point for -- a holiday, or a gap in the price
+ *  cache -- would resolve to NaN exactly like an off-window one. */
+type Band = [{ xAxis: string }, { xAxis: string }];
+
+function drawnExtent(
+  dates: readonly string[],
   interval: { start: string; end: string },
-): [{ xAxis: string }, { xAxis: string }] {
-  return [{ xAxis: interval.start }, { xAxis: interval.end }];
+): Band | null {
+  const visible = dates.filter((date) => date >= interval.start && date <= interval.end);
+  const first = visible[0];
+  const last = visible[visible.length - 1];
+  if (first === undefined || last === undefined) return null;
+  return [{ xAxis: first }, { xAxis: last }];
 }
 
 /** Projects a total-return index onto a fixed list of dates, by date, never
@@ -149,7 +184,10 @@ export function instrumentChartOption(
     lineStyle: { color: c.accent, width: 1.5 },
     markArea: {
       itemStyle: { color: c.accentBg },
-      data: chart.intervals.filter((i) => i.in_market).map(inMarketBand),
+      data: chart.intervals
+        .filter((i) => i.in_market)
+        .map((i) => drawnExtent(dates, i))
+        .filter((band): band is Band => band !== null),
     },
     markPoint: {
       symbol: "circle",
