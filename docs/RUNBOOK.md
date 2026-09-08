@@ -44,6 +44,32 @@ and re-run the suite before keeping the result.
 pip remains supported — `[project.optional-dependencies]` is untouched, so
 `pip install -e ".[dev]"` still works. It just resolves fresh instead of locked.
 
+### The benchmark set
+
+`config/benchmarks.yaml` names the proxy the instrument chart compares against.
+It is **the only tracked file in `config/`** — every sibling is gitignored,
+because they are keyed by ISIN and an ISIN is a holding. This one is keyed by a
+lowercase slug (`world`), and `ingest/benchmarks.py` refuses a key with anything
+ISIN-shaped anywhere in it, so the file cannot become a leak by being edited.
+
+It is an **answer, not a lookup**. The symbol discriminator that guards
+`instrument_symbols.yaml` cannot run here: it validates a candidate series
+against the ledger's own executed prices for that instrument, and a benchmark was
+never traded, so there is nothing to check it against. Whatever symbol is written
+is used — with one guard, that the provider's own quoted currency matches the one
+configured, because that mismatch is otherwise invisible until after FX
+conversion.
+
+The repository ships one entry. An empty file is also legitimate: the comparison
+simply does not render, and a malformed one degrades to the same state with a
+warning naming the file rather than a startup traceback.
+
+Beware the leak scanner when editing the prose here. Index-family brand words are
+real tokens in the gitignored export — they appear inside the names of holdings —
+so writing one into this tracked file fails `test_no_real_data_committed`, however
+generic the word looks. The symbol carries the identity; the label only has to be
+readable on a chart legend.
+
 `backend/.env` after copying:
 
 ```ini
@@ -194,6 +220,7 @@ rows stay economic.
 | `python -m app.cli review` | Show the corporate-action review queue: what was detected, what is still open. Rebuilt by every import, so it always describes the export as it stands. |
 | `python -m app.cli batches` | List import batches, newest first. This is how to find a batch id after the terminal has scrolled. |
 | `python -m app.cli undo <batch-id>` | Remove every transaction from one batch. The ledger's only reversal mechanism. |
+| `python -m app.cli fetch-prices` | Fill the price, FX and benchmark caches. Three phases in order: instrument prices, then FX for every currency they arrived in, then benchmarks. Refuses everything, having written nothing, while any instrument symbol is unanswered — a partial cache reports `partial` as though a provider were at fault rather than a question being unanswered. Exits 1 on that refusal, 2 when a provider is unreachable or a hand-edited config file cannot be parsed. `--full` refetches the whole five-year history instead of only what is missing. |
 | `python -m app.cli reconcile <export-dir>` | Check the cross-file invariants between `Transactions.csv`, `Account.csv` and `Portfolio.csv` (design doc Sec 3.6). Exits non-zero on any failure. `Portfolio.csv` is optional; without it the cash invariant is skipped. |
 
 To try the app without touching real data, point it at the synthetic golden files —
@@ -212,6 +239,15 @@ python -m app.cli import ..\.scratch\golden-export --resolutions ..\config\corpo
 actions, while the default path holds the answers for your real export. Pointing at
 it explicitly keeps the two sets of answers from overwriting each other.
 
+**The benchmark phase runs last, and that is the point.** A wrong symbol in
+`config/benchmarks.yaml` must not cost the instrument phase its five-year
+backfill, so benchmarks are fetched after the price and FX rows are already
+committed. A benchmark failure is reported and exits non-zero without unwinding
+what succeeded, and a benchmark whose provider quotes it in a currency the config
+did not claim stores nothing at all — a proxy converted from the wrong currency
+draws a perfectly plausible line answering a different question from the one on
+the axis.
+
 `reconcile` does **not** pass on the golden files, and that is not a bug. The
 fixture reproduces the structural quirks of the export — the misaligned header, the
 byte-identical fills, the corporate-action pairs — not its cross-file arithmetic; it
@@ -227,8 +263,8 @@ the real export under `pytest -m realdata`.
 
 ```powershell
 cd backend
-python -m pytest                 # 554 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: 53 tests against the gitignored real exports.
+python -m pytest                 # 635 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 60 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.
@@ -236,6 +272,15 @@ python -m mypy app               # Strict type check.
 
 `pytest` excludes `realdata` via `addopts` in `pyproject.toml`, so a plain run
 never depends on whether the owner's gitignored exports happen to be on disk.
+
+> **A green `-m realdata` run is not the same as a complete one.** Fourteen of the
+> sixty skip when the price cache is empty, and they all carry the same reason:
+> `price cache is empty; run fetch-prices first`. Five of those are the instrument
+> chart's own acceptance tests, so a reader who sees `46 passed` and stops reading
+> will believe M3 was verified against the real export when it was not. Skips are
+> the right behaviour — a missing cache is not a defect — but the count that
+> matters is the skip count, not the colour. Import, then `fetch-prices`, then
+> re-run: sixty passed and nothing skipped is the acceptance run.
 
 The `realdata` suite states no figure of its own. `tests/integration/realdata_subject.py`
 reads the export at run time and works out what to assert — which instrument
@@ -322,22 +367,29 @@ backend/app/
   cli.py        import / batches / undo / reconcile
 
 frontend/src/
-  api/          Live client for /api/transactions, /api/lots, /api/closures
+  api/          Live client for /api/transactions, /api/lots, /api/closures,
+                /api/valuation, /api/positions, /api/instruments
   lib/          Pure domain logic: lot matching, TWR/MWR, formatting, tokens
   portfolio/    Data layer. fixtures.ts is MODELLED data; provider.ts is the seam
   components/   Chart primitives, UI primitives, layout
-  screens/      The ten screens, and the component tests for the live ones
+  screens/      The eleven screens, and the component tests for the live ones
 
 frontend/
   vite.config.ts    Dev server, and the Vitest environment/setup wiring
   vitest.setup.ts   jest-dom matchers plus the per-test unmount
 ```
 
-**Transactions** and **Lots** read the live API. The other eight are computed from
-`frontend/src/portfolio/fixtures.ts` and are badged `MODELLED` in the UI — the
-badge is driven by `LEDGER_BACKED` in `navigation.ts`, so a screen stops being
-badged the moment it is added to that set. Adding a screen to it without pointing
-it at a real endpoint is the one way to make the UI lie about its own provenance.
+**Transactions**, **Lots**, **Positions** and **Instrument** read the live API.
+The other seven are computed from `frontend/src/portfolio/fixtures.ts` and are
+badged `MODELLED` in the UI — the badge is driven by `LEDGER_BACKED` in
+`navigation.ts`, so a screen stops being badged the moment it is added to that
+set. Adding a screen to it without pointing it at a real endpoint is the one way
+to make the UI lie about its own provenance.
+
+**Instrument** is M3's, and it is a different screen from **Stock Detail**, which
+stays `MODELLED` on purpose. Stock Detail's remaining sections are filled by M4's
+counterfactuals and M5's dividend analytics; it retires when they land, and until
+then the two coexist rather than one half-replacing the other.
 
 > **Never name a source directory `data/`.** `.gitignore` has a bare `data/` rule
 > guarding real broker exports, and it matches at any depth — a

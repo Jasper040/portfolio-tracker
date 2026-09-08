@@ -209,6 +209,14 @@ export interface IntervalExcess {
   end: string;
   instrument_return: string | null;
   benchmark_return: string | null;
+  /** The ARITHMETIC difference, `instrument_return - benchmark_return`, not the
+   *  geometric `(1 + i) / (1 + b) - 1`. Written down because the two answers
+   *  diverge as returns grow and a reader comparing this against a figure from
+   *  anywhere else has no other way to know which one they are holding.
+   *
+   *  `null`, never `0`, when either side could not be measured over the whole
+   *  interval: a zero excess claims the instrument matched the benchmark
+   *  exactly, which is not what "we could not tell" means. */
   excess: string | null;
   reason: string | null;
 }
@@ -224,6 +232,10 @@ export interface Comparison {
   intervals: IntervalExcess[];
   linked_instrument_return: string | null;
   linked_benchmark_return: string | null;
+  /** The arithmetic difference of the two CHAIN-LINKED returns, matching
+   *  `IntervalExcess.excess`. It has to match: a geometric per-interval excess
+   *  does not chain into an arithmetic summary, so mixing the two would make
+   *  this figure disagree with the rows it summarises. */
   linked_excess: string | null;
   span: SpanCoverage;
 }
