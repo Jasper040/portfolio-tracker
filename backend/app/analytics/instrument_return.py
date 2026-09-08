@@ -247,11 +247,11 @@ _SPAN_SEVERITY: dict[SpanCoverage, int] = {SPAN_FULL: 0, SPAN_PARTIAL: 1, SPAN_M
 def _worst_span(values: Sequence[SpanCoverage]) -> SpanCoverage:
     """The most severe span among `values`.
 
-    Empty defaults to `full`, matching `quotes.worst_coverage`, and the case is
-    unreachable here anyway -- a comparison with no in-market interval returns
-    early. Whether "the coverage of nothing" should be `full` or `missing` is a
-    real question the codebase currently answers both ways; it is PT-33's, and
-    deliberately not settled inside a rename.
+    Empty is `full`, for the reason `quotes.worst_coverage` now spells out: an
+    empty set of observations carries no bad news. The case is unreachable here
+    anyway -- a comparison with no in-market interval returns early with
+    `missing`, which is this module saying at its own call site that ITS kind of
+    empty is the bad kind.
     """
     return max(values, key=lambda value: _SPAN_SEVERITY[value], default=SPAN_FULL)
 
@@ -374,7 +374,16 @@ def comparison(
     intervals: Sequence[HoldingInterval],
 ) -> Comparison:
     """The instrument and its benchmark, rebased per holding and differenced."""
-    held = [interval for interval in intervals if interval.in_market]
+    # Sorted, not merely filtered. `start`/`end` below use min/max, so today's
+    # only caller gets the same arithmetic either way -- but the per-interval
+    # rows and both index series come out in list order, so an unsorted argument
+    # would silently produce a chart drawn out of sequence. An unstated
+    # precondition on a public function is a defect waiting for its second
+    # caller.
+    held = sorted(
+        (interval for interval in intervals if interval.in_market),
+        key=lambda interval: (interval.start, interval.end),
+    )
     if not held:
         return _empty(benchmark_key)
 

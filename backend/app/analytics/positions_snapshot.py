@@ -15,13 +15,11 @@ from decimal import Decimal
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.analytics.prices import price_history, quote_for
+from app.analytics.prices import price_history, priced
 from app.analytics.quotes import (
     FULL,
     MISSING,
     base_currency,
-    classify,
-    in_base,
     rate_history,
     worst_coverage,
 )
@@ -123,14 +121,15 @@ def current_positions(engine: Engine, method: LotMethod) -> PositionsSnapshot:
         isin = holding.isin
         cost = basis.get(isin, _ZERO)
         charged = charges.get(isin, _ZERO)
-        quote = quote_for(isin, as_of, prices)
-        converted = (
-            None
-            if quote is None
-            else in_base(quote, holding.quantity, as_of, base, rates)
+        result = priced(
+            isin, as_of, holding.quantity, base=base, history=prices, rates=rates
         )
+        quote = result.quote
 
-        if quote is None or converted is None:
+        # Both conditions, though `Priced` sets the two together: it lets mypy
+        # narrow `quote` for the branch below without a production assert, which
+        # -O would strip out from under it.
+        if result.value is None or quote is None:
             items.append(
                 PositionValue(
                     isin=isin,
@@ -151,7 +150,7 @@ def current_positions(engine: Engine, method: LotMethod) -> PositionsSnapshot:
             )
             continue
 
-        value, age = converted
+        value = result.value
         gross = value - cost
         net = gross - charged
         items.append(
@@ -171,13 +170,13 @@ def current_positions(engine: Engine, method: LotMethod) -> PositionsSnapshot:
                 # `None` rather than zero on a zero basis: a return on nothing is
                 # undefined, and 0% would read as "broke even".
                 unrealised_pct=None if cost == 0 else net / cost,
-                coverage=classify(quote.source, age),
+                coverage=result.coverage,
             )
         )
 
     coverage = worst_coverage([item.coverage for item in items])
-    priced = [item.market_value_base for item in items if item.market_value_base is not None]
-    complete = len(priced) == len(items)
+    valued = [item.market_value_base for item in items if item.market_value_base is not None]
+    complete = len(valued) == len(items)
 
     # Ruling F6: every `sum(...)` over money passes `_ZERO` as its start value.
     # A bare `sum(generator)` over an empty input returns the int `0`, which
@@ -185,7 +184,7 @@ def current_positions(engine: Engine, method: LotMethod) -> PositionsSnapshot:
     # `Decimal | int` under `mypy --strict`), even though its runtime value
     # happens to be numerically correct here.
     total_cost_basis = sum((basis.get(item.isin, _ZERO) for item in items), _ZERO)
-    total_market_value_base = sum(priced, _ZERO) if complete else None
+    total_market_value_base = sum(valued, _ZERO) if complete else None
     total_unrealised_base = (
         sum((item.unrealised_base or _ZERO for item in items), _ZERO)
         if complete

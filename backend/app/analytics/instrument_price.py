@@ -20,12 +20,10 @@ from decimal import Decimal
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.analytics.prices import price_history, quote_for
+from app.analytics.prices import price_history, priced
 from app.analytics.quotes import (
     MISSING,
     base_currency,
-    classify,
-    in_base,
     rate_history,
     worst_coverage,
 )
@@ -162,25 +160,18 @@ def instrument_price_view(
 
     points: list[InstrumentPricePoint] = []
     for day in weekdays(start, end):
-        quote = quote_for(isin, day, prices)
+        # Quantity 1: this is a price line, not a valuation. The arithmetic is
+        # the same either way and the caller says which it meant.
+        result = priced(
+            isin, day, Decimal("1"), base=base, history=prices, rates=rates
+        )
         held = held_on.get(day, Decimal("0")) > 0
-        if quote is None:
-            points.append(
-                InstrumentPricePoint(on=day, close_base=None, coverage=MISSING, held=held)
-            )
-            continue
-        # Quantity 1: this is a price line, not a valuation. `in_base` returns
-        # the converted amount and the age of the older of its two inputs.
-        converted = in_base(quote, Decimal("1"), day, base, rates)
-        if converted is None:
-            points.append(
-                InstrumentPricePoint(on=day, close_base=None, coverage=MISSING, held=held)
-            )
-            continue
-        value, age = converted
         points.append(
             InstrumentPricePoint(
-                on=day, close_base=value, coverage=classify(quote.source, age), held=held
+                on=day,
+                close_base=result.value,
+                coverage=result.coverage,
+                held=held,
             )
         )
 

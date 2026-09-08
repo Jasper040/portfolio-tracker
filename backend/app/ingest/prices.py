@@ -58,6 +58,12 @@ import httpx
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
+# The one import from `analytics/` in this package, and deliberate. `quotes.py`
+# names NEITHER close column -- that is the whole reason M3 split it out of
+# `prices.py` -- so reaching it costs this module no call path it did not
+# already have, and the alternative was a second, private, identical copy of a
+# five-line function that reads the account's own stated base currency.
+from app.analytics.quotes import base_currency
 from app.ingest.symbols import (
     ResolutionReport,
     SymbolAnswer,
@@ -287,7 +293,7 @@ def fetch_prices(
             for row in session.exec(select(PriceDaily)).all()
             if row.currency
         }
-        base = _base_currency(session)
+        base = base_currency(session)
         for currency in sorted(currencies - {base}):
             newest = None if full else _newest_rate(session, currency, base)
             # Unlike the price side, ECB's own series() carries no overlap:
@@ -322,14 +328,3 @@ def fetch_prices(
     )
 
 
-def _base_currency(session: Session) -> str:
-    """The account's base currency, read from the ledger rather than settings.
-
-    The rows being valued belong to an account, and that account states its own
-    base. Reading an environment variable here would let a changed `.env` silently
-    reinterpret a cache that was fetched against a different one.
-    """
-    from app.models.ledger import Account
-
-    account = session.exec(select(Account)).first()
-    return account.base_currency if account is not None else "EUR"
