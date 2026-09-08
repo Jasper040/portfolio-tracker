@@ -19,9 +19,10 @@ Two working directories matter and they are not interchangeable:
 
 ```powershell
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+
+# uv reads .python-version (3.14) and uv.lock, builds backend/.venv, and installs
+# the exact locked versions. `--extra dev` adds pytest, ruff and mypy.
+uv sync --extra dev
 
 # The SQLite directory must exist first. SQLite does NOT create a missing
 # directory — it fails with "unable to open database file".
@@ -33,6 +34,16 @@ New-Item -ItemType Directory -Force data
 Copy-Item ..\.env.example .env
 ```
 
+`uv.lock` is committed on purpose. It pins all 50 packages, transitive ones
+included, so a fresh clone resolves the versions this ledger was verified against
+rather than whatever is newest that day. `pandas` is the reason it matters: a
+parsing or dtype change between minor releases can move a figure without raising
+anything. Regenerate it deliberately with `uv lock --upgrade`, as its own commit,
+and re-run the suite before keeping the result.
+
+pip remains supported — `[project.optional-dependencies]` is untouched, so
+`pip install -e ".[dev]"` still works. It just resolves fresh instead of locked.
+
 `backend/.env` after copying:
 
 ```ini
@@ -40,6 +51,22 @@ DATABASE_URL=sqlite:///./data/portfolio.sqlite
 LOT_METHOD=FIFO
 CORS_ORIGINS=http://localhost:5173
 ```
+
+> **There is exactly one backend virtualenv, and it lives at `backend/.venv`.**
+> A `.venv` at the *repo root* is not used by anything here. If one exists, the
+> shell that activates it has no `uvicorn`, no `fastapi` and no `app` package, and
+> every command in section 2 fails with `No module named uvicorn` — which reads as
+> a broken backend rather than as the wrong environment. Check which one is active
+> before debugging anything else:
+>
+> ```powershell
+> python -c "import sys; print(sys.prefix)"   # must end in \backend\.venv
+> ```
+>
+> A deleted venv can outlive itself: `VIRTUAL_ENV` stays set in any shell that
+> had activated it, and tools keep honouring the stale path. If `$env:VIRTUAL_ENV`
+> names a directory that no longer exists, open a new terminal — nothing in that
+> one will resolve correctly.
 
 ### Frontend
 
@@ -63,9 +90,12 @@ mount and will show its error state if the API is not up.
 
 ```powershell
 cd backend
-.\.venv\Scripts\Activate.ps1
-python -m uvicorn app.main:create_app --factory --reload --port 8000
+uv run uvicorn app.main:create_app --factory --reload --port 8000
 ```
+
+`uv run` resolves the interpreter from `backend/.venv` itself, so there is no
+activation step to get wrong — which is the whole failure mode the note in
+section 1 describes. Activating and calling `python -m uvicorn ...` is equivalent.
 
 `app.main:create_app` is a factory, not a module-level `app`. Uvicorn detects that
 on its own, so omitting `--factory` still works — it just warns. Pass it anyway.
@@ -197,8 +227,8 @@ the real export under `pytest -m realdata`.
 
 ```powershell
 cd backend
-python -m pytest                 # 304 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: 35 tests against the gitignored real exports.
+python -m pytest                 # 554 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 53 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.
@@ -325,6 +355,8 @@ it at a real endpoint is the one way to make the UI lie about its own provenance
 | `ValidationError: database_url Field required` | No `.env` in the current directory | Copy `.env.example` to `backend/.env`, and run the API/CLI from `backend/` |
 | `Error loading ASGI app. Attribute "app" not found` | Pointed at `app.main:app`, which does not exist | Target the factory: `app.main:create_app --factory` |
 | `WARNING: ASGI app factory detected` | `--factory` omitted | Harmless — uvicorn detects it and proceeds. Pass `--factory` to silence it. |
+| `error: Multiple top-level packages discovered in a flat-layout: ['app', 'data']` during `pip install -e .` | setuptools auto-discovery saw both `app/` and `data/` and refused to guess which one is the package | Already fixed: `[tool.setuptools.packages.find] include = ["app*"]` in `backend/pyproject.toml`. If it returns, something removed that table — do not "fix" it by deleting `data/`. |
+| `sqlite3.OperationalError: no such column: transaction.<name>` | The database file predates a column the models have since added. `SQLModel.metadata.create_all` creates *missing tables*; it never alters an existing one, so there is no automatic migration | Delete `backend/data/portfolio.sqlite` and re-import (section 3). Check the row counts first if you are unsure what the file holds. |
 | Vite reports "Port 5173 is in use" | A stale dev server from an earlier session | `netstat -ano \| Select-String ":5173"`, then `taskkill /PID <pid> /F` |
 | Numbers change when switching FIFO/LIFO/HIFO | Expected | The lot method changes every realised figure. TWR and MWR do **not** change — they are cashflow-based, not lot-based. |
 
@@ -334,3 +366,28 @@ it at a real endpoint is the one way to make the UI lie about its own provenance
 netstat -ano | Select-String ":5173.*LISTENING"
 taskkill /PID <pid> /F
 ```
+
+---
+
+## 7. Tracking work
+
+Bugs, follow-ups, backlog items and the M0–M8 milestones live in Jira project **`PT`**, not
+in this repo. The convention — including what may never be written into a Jira issue — is
+`docs/TRACKING.md`.
+
+Nothing in the docs states a status. If you want to know what is open, ask the board:
+
+```jql
+project = PT AND statusCategory != Done ORDER BY created ASC
+```
+
+Two queries answer most questions:
+
+```jql
+project = PT AND labels = "operator-action" AND statusCategory != Done   -- waiting on you
+project = PT AND labels = carried AND statusCategory != Done             -- deferred debt
+```
+
+`operator-action` is the one worth checking before a session: it is work a machine must not
+do for you, such as answering a symbol in `config/instrument_symbols.yaml`, where the answer
+is taken as authoritative and deliberately not re-validated against the ledger.
