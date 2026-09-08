@@ -259,10 +259,24 @@ def test_valuation_no_longer_names_a_close_column_directly() -> None:
     assert UNADJUSTED not in names
     assert ADJUSTED not in names
 
-def test_total_return_reads_only_the_adjusted_close() -> None:
-    names = _identifiers(APP / "analytics" / "total_return.py")
+def test_the_adjusted_point_mapper_reads_only_the_adjusted_close() -> None:
+    """Was `test_total_return_reads_only_the_adjusted_close` until M6a split
+    `total_return.py` a second time. Re-pointed for exactly the reason the
+    unadjusted one above was: after the split neither reader names a column --
+    both go through `adjusted.py` -- so the old assertion would have passed
+    while quietly losing the half that checks the column is read SOMEWHERE."""
+    names = _identifiers(APP / "analytics" / "adjusted.py")
     assert ADJUSTED in names
     assert UNADJUSTED not in names
+
+
+def test_neither_adjusted_reader_names_a_close_column_directly() -> None:
+    """Both read through `adjusted.py` now. Asserted so a future edit that
+    inlines a column read back into either reader has to argue with a test."""
+    for module in ("total_return.py", "benchmark_return.py"):
+        names = _identifiers(APP / "analytics" / module)
+        assert UNADJUSTED not in names, module
+        assert ADJUSTED not in names, module
 
 def _route_modules() -> list[str]:
     """Every endpoint module under `api/`, discovered rather than listed.
@@ -314,6 +328,29 @@ def test_no_route_module_can_reach_the_total_return_module() -> None:
 
 def test_the_total_return_module_does_not_reach_valuation() -> None:
     assert "app.analytics.valuation" not in _reachable_from("app.analytics.total_return")
+
+
+def test_the_benchmark_reader_does_not_reach_the_instrument_reader() -> None:
+    """A benchmark is safe next to a valuation path; an instrument is not.
+
+    Reaching an INSTRUMENT's adjusted closes from a path that also values that
+    instrument at the unadjusted close plus cash is Sec 7.5's double count.
+    Reaching a BENCHMARK's is not: a benchmark is never held, pays the owner
+    nothing, and appears in no cash balance, so there is nothing to count twice.
+
+    While both readers shared `total_return.py` no endpoint could have the
+    second without the first, which is the position M6a's performance endpoint
+    would have been in -- needing a benchmark, and reaching an instrument's
+    adjusted closes to get one.
+
+    The `is_file` assertion is not decoration. `_reachable_from` skips a module
+    that does not exist, so without it this test passes vacuously for as long as
+    `benchmark_return.py` is absent -- which is the whole of the time it would
+    be reporting a guarantee nobody had built yet.
+    """
+    assert (APP / "analytics" / "benchmark_return.py").is_file()
+    reachable = _reachable_from("app.analytics.benchmark_return")
+    assert "app.analytics.total_return" not in reachable
 
 
 def test_the_instrument_price_module_cannot_reach_the_adjusted_close() -> None:

@@ -43,6 +43,8 @@ from typing import Protocol
 from sqlalchemy import Engine
 from sqlmodel import Session
 
+from app.analytics.adjusted import TotalReturnPoint
+from app.analytics.benchmark_return import benchmark_total_return_series
 from app.analytics.quotes import (
     FULL,
     MISSING,
@@ -54,11 +56,7 @@ from app.analytics.quotes import (
     rate_history,
     worst_coverage,
 )
-from app.analytics.total_return import (
-    TotalReturnPoint,
-    benchmark_total_return_series,
-    total_return_series,
-)
+from app.analytics.total_return import total_return_series
 from app.models.market import FxDaily
 from app.models.types import Coverage
 
