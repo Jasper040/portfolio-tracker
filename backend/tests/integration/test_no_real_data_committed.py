@@ -150,9 +150,65 @@ def _corporate_action_dates() -> set[str]:
     return dates
 
 
+def _leaks_in(
+    rel: str,
+    body: str,
+    isins: set[str],
+    tokens: set[str],
+    amounts: set[str],
+    stamps: set[str],
+) -> list[str]:
+    """Everything identifying in one tracked file's text.
+
+    Extracted from the scan below so the matching rules can be asserted
+    directly, on a synthetic body. A predicate that only ever runs over the
+    real repo is a predicate whose blind spots stay invisible until one of them
+    ships -- which is exactly what happened to the ISIN rule below.
+    """
+    found: list[str] = []
+    # Case-INsensitively. `config/benchmarks.yaml` is the one tracked file in
+    # `config/`, and it is tracked only because `ingest/benchmarks.py` refuses
+    # an ISIN-shaped key. That loader's slug rule forces LOWERCASE, so the one
+    # shape it could ever let through is a lowercase ISIN -- which a
+    # case-sensitive match here would then wave past as well. Two defences with
+    # the same gap are one defence.
+    lowered = body.lower()
+    for isin in sorted(isins):
+        if isin.lower() in lowered:
+            found.append(f"{rel}: ISIN {isin}")
+    for token in sorted(tokens):
+        if re.search(rf"\b{re.escape(token)}\b", body, re.IGNORECASE):
+            found.append(f"{rel}: instrument name {token!r}")
+    for amount in sorted(amounts):
+        if amount in body:
+            found.append(f"{rel}: amount {amount}")
+    for stamp in sorted(stamps):
+        if stamp in body:
+            found.append(f"{rel}: corporate-action date {stamp}")
+    return found
+
+
+def test_an_isin_is_a_leak_whatever_case_it_is_written_in() -> None:
+    """The scanner's own blind spot, asserted on a synthetic body.
+
+    The ISIN below is invented and belongs to nobody; the key around it is the
+    exact shape `ingest/benchmarks.py` used to accept.
+    """
+    leaks = _leaks_in(
+        "config/benchmarks.yaml",
+        "benchmark-nl0000000001:\n  symbol: AAA.XX\n",
+        {"NL0000000001"},
+        set(),
+        set(),
+        set(),
+    )
+    assert leaks == ["config/benchmarks.yaml: ISIN NL0000000001"]
+
+
 def test_no_tracked_file_contains_a_real_holding() -> None:
     isins, tokens, amounts = _real_values()
     assert isins, "read no ISINs from the export; the scan would pass vacuously"
+    stamps = _corporate_action_dates()
 
     leaks: list[str] = []
     for path in _tracked_files():
@@ -160,19 +216,8 @@ def test_no_tracked_file_contains_a_real_holding() -> None:
             body = path.read_text(encoding="utf-8", errors="ignore")
         except (OSError, ValueError):
             continue
-        rel = path.relative_to(REPO).as_posix()
-
-        for isin in sorted(isins):
-            if isin in body:
-                leaks.append(f"{rel}: ISIN {isin}")
-        for token in sorted(tokens):
-            if re.search(rf"\b{re.escape(token)}\b", body, re.IGNORECASE):
-                leaks.append(f"{rel}: instrument name {token!r}")
-        for amount in sorted(amounts):
-            if amount in body:
-                leaks.append(f"{rel}: amount {amount}")
-        for stamp in sorted(_corporate_action_dates()):
-            if stamp in body:
-                leaks.append(f"{rel}: corporate-action date {stamp}")
+        leaks.extend(
+            _leaks_in(path.relative_to(REPO).as_posix(), body, isins, tokens, amounts, stamps)
+        )
 
     assert not leaks, "real holdings found in tracked files:\n  " + "\n  ".join(leaks)

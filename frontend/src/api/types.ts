@@ -231,6 +231,16 @@ export interface InstrumentChart extends Provenance {
   /** `null` when no benchmark was requested. Comparison is an overlay, not a
    *  precondition -- the chart still draws without one. */
   comparison: Comparison | null;
+  /** The left edge the range control asked for, echoed back. Never `null`,
+   *  unlike `ValuationSeries.requested_from`: a range always implies a start
+   *  date, so there is no "the caller did not ask" case to represent. */
+  requested_from: string;
+  /** `true` when `requested_from` fell before the instrument's first trade and
+   *  the window was clamped to it. The reader asked for a year and the position
+   *  is four months old -- the honest reply is everything there is plus a note,
+   *  never eight months of out-of-market line for a period they had never heard
+   *  of the instrument. */
+  clamped: boolean;
 }
 
 /** One ISIN this ledger has ever recorded an economic trade for. Mirrors
@@ -249,5 +259,13 @@ export interface InstrumentSummary {
 export interface Benchmark {
   key: string;
   name: string;
+  /** Total expense ratio as a PERCENTAGE PER YEAR: `"0.20"` means 0.20%/yr,
+   *  not 20% and not a fraction. Same unit as `config/benchmarks.yaml` and
+   *  `BenchmarkOut.ter` -- reading it as a fraction renders the proxy's drag
+   *  100x too small, which is why the unit is written down on all three.
+   *
+   *  Render it with `decimal(ter, 2, 2)`, never `decimalPercent`: that helper
+   *  shifts the point two places because it takes a RATIO, and this is already
+   *  a percentage. */
   ter: string;
 }

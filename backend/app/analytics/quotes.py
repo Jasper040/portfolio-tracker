@@ -40,7 +40,14 @@ MISSING: Coverage = "missing"
 #: Worst news first. `missing` outranks everything because it is the only value
 #: that withholds a number. `partial` outranks `manual` because a stale provider
 #: price is a fault; a hand-typed one is a choice.
-_SEVERITY = {FULL: 0, MANUAL: 1, PARTIAL: 2, MISSING: 3}
+#:
+#: Annotated `dict[Coverage, int]` rather than left to inference. M3-5 made
+#: `Coverage` a checked type precisely so a fifth value could not be introduced
+#: without every consumer being told; this is the one table where an unchecked
+#: dict would swallow that -- inference widens the key type to `str`, so a new
+#: member would sail past mypy and `KeyError` at runtime, inside `max()`, in
+#: whichever request happened to carry it.
+_SEVERITY: dict[Coverage, int] = {FULL: 0, MANUAL: 1, PARTIAL: 2, MISSING: 3}
 
 
 def worst_coverage(values: Sequence[Coverage]) -> Coverage:

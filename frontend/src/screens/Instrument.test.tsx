@@ -50,7 +50,10 @@ function instrument(overrides: Partial<InstrumentSummary> = {}): InstrumentSumma
 }
 
 function benchmark(overrides: Partial<Benchmark> = {}): Benchmark {
-  return { key: "world", name: "World Equities", ter: "0.0020", ...overrides };
+  // A PERCENTAGE per year -- "0.20" is 0.20%/yr, matching the unit
+  // `config/benchmarks.yaml` and `BenchmarkOut.ter` both document. The old
+  // "0.0020" was a fraction, 100x off.
+  return { key: "world", name: "World Equities", ter: "0.20", ...overrides };
 }
 
 function intervalExcess(overrides: Partial<IntervalExcess> = {}): IntervalExcess {
@@ -92,6 +95,8 @@ function chart(overrides: Partial<InstrumentChart> = {}): InstrumentChart {
     intervals: [{ start: "2025-01-01", end: "2025-02-01", in_market: true, price_return: "0.05" }],
     markers: [],
     comparison: null,
+    requested_from: "2025-01-01",
+    clamped: false,
     ...overrides,
   };
 }
@@ -234,6 +239,28 @@ describe("excess returns", () => {
   });
 });
 
+describe("a window wider than the instrument's life", () => {
+  it("says the window was clamped instead of just starting the chart late", async () => {
+    serve([instrument()], [], {
+      XX0000000001: chart({ requested_from: "2024-06-01", clamped: true }),
+    });
+    render(<Instrument />);
+
+    expect(await screen.findByText(/Asked for/i)).toBeInTheDocument();
+    expect(screen.getByText(/first traded/i)).toBeInTheDocument();
+  });
+
+  it("says nothing when the requested window fits inside the holding", async () => {
+    serve([instrument()], [], {
+      XX0000000001: chart({ requested_from: "2025-01-01", clamped: false }),
+    });
+    render(<Instrument />);
+
+    await screen.findByRole("table");
+    expect(screen.queryByText(/Asked for/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("coverage", () => {
   it("shows the benchmark's own span coverage separately from the instrument's own coverage", async () => {
     serve([instrument()], [benchmark()], {
@@ -244,6 +271,54 @@ describe("coverage", () => {
     await screen.findByText("FULL");
     expect(screen.getByText(/BENCHMARK SPAN/i)).toBeInTheDocument();
     expect(screen.getByText("PARTIAL")).toBeInTheDocument();
+  });
+});
+
+describe("the benchmark's cost", () => {
+  it("shows each proxy's TER beside its name, in the documented unit", async () => {
+    serve([instrument()], [benchmark({ ter: "0.20" })]);
+    render(<Instrument />);
+
+    expect(await screen.findByText("TER 0,20%/yr")).toBeInTheDocument();
+  });
+
+  it("says the TER is drag on the proxy and is not subtracted", async () => {
+    // Section 8.3's reading instruction: an excess smaller than the TER is not
+    // evidence the holding beat the index the proxy tracks.
+    serve([instrument()], [benchmark()], {
+      XX0000000001: chart({ comparison: comparison() }),
+    });
+    render(<Instrument />);
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(await screen.findByRole("button", { name: "World Equities" }));
+
+    expect(
+      await screen.findByText(/has not necessarily beaten the market/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("the benchmark selector when there is nothing to select", () => {
+  it("names the file to edit instead of rendering no control at all", async () => {
+    // `config/benchmarks.yaml` ships with every entry commented out, so this
+    // is the ordinary first-run state -- and rendering nothing left a reader
+    // unable to tell the comparison feature existed.
+    serve([instrument()], []);
+    render(<Instrument />);
+
+    expect(await screen.findByText(/config\/benchmarks\.yaml/)).toBeInTheDocument();
+  });
+
+  it("distinguishes a failed fetch from an empty configured set", async () => {
+    mockInstruments.mockResolvedValue([instrument()]);
+    mockBenchmarks.mockRejectedValue(new Error("500 Server Error"));
+    mockChart.mockImplementation((isin) => Promise.resolve(chart({ isin })));
+    render(<Instrument />);
+
+    expect(await screen.findByText(/Could not load the benchmark list/i)).toBeInTheDocument();
+    expect(screen.getByText(/500 Server Error/)).toBeInTheDocument();
+    expect(screen.queryByText(/No benchmark configured/i)).not.toBeInTheDocument();
   });
 });
 
@@ -258,5 +333,17 @@ describe("basis", () => {
     // and in the panel's linked-total footnote -- both are the right place for
     // it, so this asserts presence rather than a single match.
     await waitFor(() => expect(screen.getAllByText(/total_return/i).length).toBeGreaterThan(0));
+  });
+
+  it("says the excess is an arithmetic difference, which basis alone does not", async () => {
+    // `basis` labels how each RETURN was built; it says nothing about how the
+    // two were DIFFERENCED, and the arithmetic and geometric answers diverge
+    // as returns grow.
+    serve([instrument()], [benchmark()], {
+      XX0000000001: chart({ comparison: comparison() }),
+    });
+    render(<Instrument />);
+
+    await waitFor(() => expect(screen.getAllByText(/arithmetic/i).length).toBeGreaterThan(0));
   });
 });

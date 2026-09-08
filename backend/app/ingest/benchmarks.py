@@ -7,9 +7,15 @@ against (M3 section 4.1). Nothing re-derives what is written here.
 
 The difference, and the reason this one is TRACKED while every other config
 file in `config/` is gitignored, is that a key here names no holding. That is
-enforced rather than asked for: `_check_key` refuses an ISIN-shaped key
-outright. Committing a benchmark set is only safe while that holds, so it is a
-test rather than a comment.
+enforced rather than asked for: `_check_key` refuses a key with anything
+ISIN-shaped ANYWHERE in it, not merely a key that is entirely an ISIN --
+`benchmark-nl0000000001` is a valid slug and used to load. Committing a
+benchmark set is only safe while that holds, so it is a test rather than a
+comment.
+
+`test_no_real_data_committed.py` is the backstop, and it now matches ISINs
+case-insensitively: the slug rule below forces lowercase, so a case-sensitive
+backstop shared this check's exact blind spot and was no backstop at all.
 """
 
 from __future__ import annotations
@@ -25,8 +31,13 @@ import yaml
 #: ISIN, and "as narrow as the job allows" is the cheapest way to be sure.
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
-#: Two letters, nine alphanumerics, one check digit.
-_ISIN = re.compile(r"^[A-Za-z]{2}[A-Za-z0-9]{9}[0-9]$")
+#: Two letters, nine alphanumerics, one check digit -- ANYWHERE in the key,
+#: not anchored to its ends. `benchmark-nl0000000001` is a perfectly valid
+#: slug, so an anchored match saw "not an ISIN" and let a holding into the one
+#: tracked file in `config/`. The hyphen is what makes the unanchored form
+#: safe for ordinary keys: it breaks the run of alphanumerics an ISIN needs, so
+#: `broad-world-acc-2` cannot contain one however long it grows.
+_ISIN = re.compile(r"[A-Za-z]{2}[A-Za-z0-9]{9}[0-9]")
 
 _REQUIRED = ("symbol", "currency", "name", "ter")
 
@@ -48,11 +59,13 @@ class Benchmark:
 
 
 def _check_key(key: str) -> None:
-    if _ISIN.match(key):
+    if _ISIN.search(key):
         raise BenchmarkConfigError(
-            f"benchmark key {key!r} looks like an ISIN. Keys are slugs precisely so this "
-            "file can be committed; an ISIN in a tracked file is a holding, which "
-            "test_no_real_data_committed treats as a leak."
+            f"benchmark key {key!r} looks like an ISIN, or contains something that "
+            "does. Keys are slugs precisely so this file can be committed; an ISIN in "
+            "a tracked file is a holding, which test_no_real_data_committed treats as "
+            "a leak. If the key is innocent, break the run of letters and digits with "
+            "a hyphen."
         )
     if not _SLUG.match(key):
         raise BenchmarkConfigError(

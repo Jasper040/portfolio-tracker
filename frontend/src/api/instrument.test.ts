@@ -60,9 +60,14 @@ describe("fetchInstrumentChart", () => {
 
 describe("fetchBenchmarks", () => {
   it("returns the benchmark list", async () => {
-    stub({ items: [{ key: "world", name: "World equities", ter: "0.0020" }] });
+    // `ter` is a PERCENTAGE per year, not a fraction: "0.20" is 0.20%/yr. Same
+    // unit as `config/benchmarks.yaml`, `ingest/benchmarks.py` and
+    // `BenchmarkOut.ter`. The old "0.0020" here was a fraction -- 100x off the
+    // documented unit, and the kind of fixture that teaches the next reader
+    // the wrong thing.
+    stub({ items: [{ key: "world", name: "World equities", ter: "0.20" }] });
     const benchmarks = await fetchBenchmarks();
-    expect(benchmarks).toEqual([{ key: "world", name: "World equities", ter: "0.0020" }]);
+    expect(benchmarks).toEqual([{ key: "world", name: "World equities", ter: "0.20" }]);
   });
 
   it("surfaces a failed response rather than returning an empty list", async () => {

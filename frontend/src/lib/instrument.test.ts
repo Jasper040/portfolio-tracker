@@ -8,7 +8,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { Comparison, Interval, InstrumentChart, Marker, PricePoint } from "../api/types";
-import { instrumentChartOption, markerSymbolSize, toPlotValue } from "./instrument";
+import {
+  BENCHMARK_AXIS_NAME,
+  instrumentChartOption,
+  markerSymbolSize,
+  toPlotValue,
+} from "./instrument";
 
 function point(overrides: Partial<PricePoint> = {}): PricePoint {
   return {
@@ -67,6 +72,8 @@ function chart(overrides: Partial<InstrumentChart> = {}): InstrumentChart {
     intervals: [interval()],
     markers: [marker()],
     comparison: null,
+    requested_from: "2025-03-03",
+    clamped: false,
     method: null,
     coverage: "full",
     ...overrides,
@@ -166,6 +173,37 @@ describe("benchmark toggle", () => {
     const option = instrumentChartOption(c, { showBenchmark: true });
     const series = option.series as Array<Record<string, unknown>>;
     expect(series).toHaveLength(1);
+  });
+});
+
+describe("the benchmark overlay's own axis and legend", () => {
+  // The overlay is a REBASED INDEX on its own independently auto-scaled axis,
+  // drawn against the instrument's raw PRICE on axis 0. Two independently
+  // scaled series always look like they track each other, so an unnamed second
+  // axis with no legend invites the reader to compare two lines that share no
+  // unit at all.
+
+  it("names the second axis so the dashed line cannot read as a second price", () => {
+    const option = instrumentChartOption(chart({ comparison: comparison() }), {
+      showBenchmark: true,
+    });
+    const axes = option.yAxis as Array<Record<string, unknown>>;
+    expect(axes[1]?.name).toBe(BENCHMARK_AXIS_NAME);
+    expect(String(axes[1]?.name)).toMatch(/index/i);
+  });
+
+  it("legends both series by name when the overlay is drawn", () => {
+    const option = instrumentChartOption(chart({ comparison: comparison() }), {
+      showBenchmark: true,
+    });
+    const legend = option.legend as { data: string[] };
+    expect(legend.data).toEqual(["XX0000000001", "world"]);
+  });
+
+  it("legends only the price line when there is no overlay", () => {
+    const option = instrumentChartOption(chart(), { showBenchmark: false });
+    const legend = option.legend as { data: string[] };
+    expect(legend.data).toEqual(["XX0000000001"]);
   });
 });
 

@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 from app.analytics.rebuild import ChargeMismatch, rebuild
 from app.db import create_engine_and_tables
 from app.domain.lots import LOT_METHODS
-from app.ingest.benchmarks import load_benchmarks
+from app.ingest.benchmarks import BenchmarkConfigError, load_benchmarks
 from app.ingest.corporate_actions import CorporateAction
 from app.ingest.degiro.account_csv import parse_account_csv
 from app.ingest.degiro.portfolio_csv import parse_portfolio_csv
@@ -379,7 +379,19 @@ def fetch_prices_command(
 
     # Last, deliberately: a wrong symbol in benchmarks.yaml must not cost the
     # instrument phase its five-year backfill (M3 section 4.4).
-    benchmarks = load_benchmarks(Path(settings.benchmarks_path))
+    #
+    # Caught, and exiting 2 like every other malformed hand-edited config above:
+    # M3 tells the operator to edit this file by hand, and a mistake in a file a
+    # command asked you to write is not a reason to show a traceback. Unlike the
+    # two above, this one is caught HERE rather than around the whole run: the
+    # instrument phase has already written its rows by this point, and they are
+    # good regardless of what the benchmark file says.
+    try:
+        benchmarks = load_benchmarks(Path(settings.benchmarks_path))
+    except BenchmarkConfigError as malformed:
+        typer.echo(str(malformed), err=True)
+        raise typer.Exit(code=2) from malformed
+
     bench_report = fetch_benchmarks(
         engine, build_providers(settings).prices, benchmarks, full=full, today=date.today()
     )

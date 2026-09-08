@@ -33,6 +33,21 @@
  *  badge of its own, which means `reason` is the ONLY place that fact is
  *  visible.
  *
+ *  The benchmark control always renders something, even when there is nothing
+ *  to pick. `config/benchmarks.yaml` ships with every entry commented out, so
+ *  an empty list is the ordinary first-run state, and drawing no control at all
+ *  left a reader with no way to tell the comparison feature existed. A FAILED
+ *  fetch is surfaced separately from an empty set -- see `BenchmarkSelector` --
+ *  because collapsing the two made a broken endpoint indistinguishable from a
+ *  configuration choice.
+ *
+ *  Each proxy's TER travels with it: beside its name in the selector, and beside
+ *  every excess figure it produced. Section 4.3 requires the TER be documented
+ *  as proxy drag and section 8.3 says why it has to sit next to the number --
+ *  a holding that beats the proxy by less than the TER has not necessarily
+ *  beaten the market. It is a PERCENTAGE per year on the wire, so `terLabel`
+ *  re-punctuates it with `decimal` and never `decimalPercent`.
+ *
  *  Money and index figures stay strings end to end -- `decimalPercent` and
  *  `decimal`-family formatters re-punctuate the exact string the API sent.
  *  Nothing on this screen is passed through `Number()`; the chart's own two
@@ -59,7 +74,7 @@ import { MethodBadge } from "../components/ui/MethodBadge";
 import { Notice } from "../components/ui/Notice";
 import { Panel } from "../components/ui/Panel";
 import { HeadRow, Table, TableFrame, Td, rowBackground, type ColumnDef } from "../components/ui/Table";
-import { decimalIsNegative, decimalPercent, shortDate } from "../lib/format";
+import { decimal, decimalIsNegative, decimalPercent, shortDate } from "../lib/format";
 import { instrumentChartOption } from "../lib/instrument";
 import { c, mono } from "../lib/theme";
 
@@ -111,6 +126,78 @@ function BenchmarkSpanBadge({ coverage }: { coverage: Coverage }) {
   );
 }
 
+/** The proxy's total expense ratio, in the unit the API states: a PERCENTAGE
+ *  per year, so it is re-punctuated with `decimal` and never passed through
+ *  `decimalPercent` (which shifts the point two places because it takes a
+ *  ratio). "0.20" reads as 0,20%/yr. */
+function terLabel(ter: string): string {
+  return `TER ${decimal(ter, 2, 2)}%/yr`;
+}
+
+interface BenchmarkSelectorProps {
+  benchmarks: readonly Benchmark[];
+  /** Non-null when the LIST could not be fetched, which is a different fact
+   *  from "none configured" and must not render the same. */
+  error: string | null;
+  selected: string | null;
+  onSelect: (key: string | null) => void;
+}
+
+/** The benchmark control, and -- when there is no control to draw -- the reason
+ *  why.
+ *
+ *  `config/benchmarks.yaml` ships with every entry commented out, so the
+ *  ordinary first-run state is an empty list. Rendering nothing at all left a
+ *  reader unable to tell the comparison feature existed, which is the whole
+ *  point of M3 section 4.3. A fetch failure is surfaced separately: collapsing
+ *  it into the empty case would make a broken API look like a configuration
+ *  choice, and swallowing an error is the one thing this codebase does not do.
+ *
+ *  Each proxy's TER rides beside its name because it is the proxy's own drag,
+ *  and section 8.3 turns that into a reading instruction: a holding that beats
+ *  the proxy by less than the TER has not necessarily beaten the market. It sits
+ *  OUTSIDE the pill so the button's accessible name stays the benchmark's name. */
+function BenchmarkSelector({ benchmarks, error, selected, onSelect }: BenchmarkSelectorProps) {
+  if (error !== null) {
+    return (
+      <span style={{ fontSize: 11, color: c.negative }}>
+        Could not load the benchmark list. {error}.
+      </span>
+    );
+  }
+
+  if (benchmarks.length === 0) {
+    return (
+      <span style={{ fontSize: 11, color: c.textFaint }}>
+        No benchmark configured. Add one to{" "}
+        <code style={{ fontFamily: mono }}>config/benchmarks.yaml</code> to overlay a proxy.
+      </span>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+      <span style={{ fontFamily: mono, fontSize: 10, color: c.textFaint }}>BENCHMARK</span>
+      <Pill monospace active={selected === null} onClick={() => onSelect(null)}>
+        None
+      </Pill>
+      {benchmarks.map((b) => (
+        <span key={b.key} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <Pill monospace active={selected === b.key} onClick={() => onSelect(b.key)}>
+            {b.name}
+          </Pill>
+          <span
+            title="The proxy's own annual cost, reported and never subtracted -- adjusting for it would invent a series nobody published."
+            style={{ fontFamily: mono, fontSize: 9.5, color: c.textFaint }}
+          >
+            {terLabel(b.ter)}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function signColour(value: string | null): string {
   if (value == null) return c.textMuted;
   return decimalIsNegative(value) ? c.negative : c.positive;
@@ -129,8 +216,27 @@ function excessFor(comparison: Comparison | null, interval: Interval): IntervalE
 /** The excess cell. `null` renders "—" plus `reason` -- the one place an
  *  instrument-side span shortfall is visible at all (see this file's
  *  docstring) -- and a real figure always carries `basis` beside it so it can
- *  never be mistaken for a plain total-weighted-return number. */
-function ExcessCell({ row, basis }: { row: IntervalExcess | null; basis: string }): ReactNode {
+ *  never be mistaken for a plain total-weighted-return number.
+ *
+ *  "arithmetic" is beside it for a reason `basis` cannot cover: `basis` labels
+ *  how each RETURN was constructed (total return, dividends included) and says
+ *  nothing about how the two were DIFFERENCED. This figure is
+ *  `instrument − benchmark`, not `(1 + i) / (1 + b) - 1`, and the two answers
+ *  diverge as returns grow -- a reader comparing it against a figure computed
+ *  elsewhere has no other way to know which they are holding.
+ *
+ *  The proxy's TER follows, when one is selected, because the figure cannot be
+ *  read without it: an excess smaller than the TER is not evidence the holding
+ *  beat the index the proxy tracks. */
+function ExcessCell({
+  row,
+  basis,
+  ter,
+}: {
+  row: IntervalExcess | null;
+  basis: string;
+  ter: string | null;
+}): ReactNode {
   if (row === null) return <span style={{ color: c.textFaint }}>—</span>;
 
   if (row.excess === null) {
@@ -143,10 +249,12 @@ function ExcessCell({ row, basis }: { row: IntervalExcess | null; basis: string 
   }
 
   return (
-    <span>
-      <span style={{ color: signColour(row.excess) }}>{decimalPercent(row.excess)}</span>{" "}
-      <span style={{ fontSize: 9.5, color: c.textFaint }}>({basis})</span>
-    </span>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
+      <span style={{ color: signColour(row.excess) }}>{decimalPercent(row.excess)}</span>
+      <span style={{ fontSize: 9.5, color: c.textFaint, textAlign: "right" }}>
+        {basis}, arithmetic{ter === null ? "" : ` · ${terLabel(ter)}`}
+      </span>
+    </div>
   );
 }
 
@@ -159,6 +267,7 @@ export function Instrument() {
   const [instrumentsError, setInstrumentsError] = useState<string | null>(null);
 
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
+  const [benchmarksError, setBenchmarksError] = useState<string | null>(null);
 
   const [chart, setChart] = useState<InstrumentChart | null>(null);
   const [chartError, setChartError] = useState<string | null>(null);
@@ -193,11 +302,18 @@ export function Instrument() {
     let cancelled = false;
     fetchBenchmarks()
       .then((items) => {
-        if (!cancelled) setBenchmarks(items);
+        if (cancelled) return;
+        setBenchmarks(items);
+        setBenchmarksError(null);
       })
-      .catch(() => {
-        // Non-fatal: the chart still draws without a benchmark list, it just
-        // has nothing to offer in the selector.
+      .catch((cause: unknown) => {
+        // Non-fatal -- the chart still draws without a benchmark list -- but
+        // never silent. Swallowing this made a broken endpoint look exactly
+        // like "no benchmark configured", which is a legitimate and very
+        // common state, so the one that needs fixing hid inside the one that
+        // does not.
+        if (cancelled) return;
+        setBenchmarksError(cause instanceof Error ? cause.message : String(cause));
       });
     return () => {
       cancelled = true;
@@ -272,6 +388,13 @@ export function Instrument() {
 
   const selected = instruments.find((i) => i.isin === isin);
   const comparison = chart.comparison;
+  //: The proxy currently overlaid, for the TER beside every excess figure.
+  //: `null` when none is selected -- and also when the list failed to load,
+  //: which is why the lookup is on `benchmarks` rather than on `benchmarkKey`.
+  const activeBenchmark = benchmarks.find((b) => b.key === benchmarkKey) ?? null;
+  //: The left edge actually drawn. When `clamped` is true this IS the
+  //: instrument's first trade, because the route clamps the window to it.
+  const firstDrawnDay = chart.points[0]?.date;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -292,31 +415,28 @@ export function Instrument() {
         title={selected?.product_name || chart.isin}
         subtitle={`${chart.isin} — solid where held, blank where flat`}
         actions={
-          benchmarks.length > 0 ? (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontFamily: mono, fontSize: 10, color: c.textFaint }}>BENCHMARK</span>
-              <Pill monospace active={benchmarkKey === null} onClick={() => setBenchmarkKey(null)}>
-                None
-              </Pill>
-              {benchmarks.map((b) => (
-                <Pill
-                  key={b.key}
-                  monospace
-                  active={benchmarkKey === b.key}
-                  onClick={() => setBenchmarkKey(b.key)}
-                >
-                  {b.name}
-                </Pill>
-              ))}
-            </div>
-          ) : undefined
+          <BenchmarkSelector
+            benchmarks={benchmarks}
+            error={benchmarksError}
+            selected={benchmarkKey}
+            onSelect={setBenchmarkKey}
+          />
         }
         footer={
           comparison && (
             <>
               Linked over the range: instrument {decimalPercent(comparison.linked_instrument_return)}, benchmark{" "}
               {decimalPercent(comparison.linked_benchmark_return)}, excess{" "}
-              {decimalPercent(comparison.linked_excess)} — basis: {comparison.basis}.
+              {decimalPercent(comparison.linked_excess)} — basis: {comparison.basis}, differenced
+              arithmetically (instrument − benchmark), not geometrically.
+              {activeBenchmark !== null && (
+                <>
+                  {" "}
+                  {activeBenchmark.name} carries {terLabel(activeBenchmark.ter)}, reported here and
+                  never subtracted: a holding that beats the proxy by less than the TER has not
+                  necessarily beaten the market.
+                </>
+              )}
             </>
           )
         }
@@ -332,6 +452,19 @@ export function Instrument() {
               in its own component so it cannot read as the same badge above. */}
           {comparison && <BenchmarkSpanBadge coverage={comparison.coverage} />}
         </div>
+        {/* A statement about the QUESTION, not the answer -- the same note
+            `CoverageStrip` puts under the portfolio value chart, and for the
+            same reason: the reader asked for a window longer than this
+            instrument has existed, and the honest reply is everything there is
+            plus a sentence. Without it a four-month-old position at `1Y` looks
+            like a chart that simply starts late. */}
+        {chart.clamped && firstDrawnDay !== undefined && (
+          <div style={{ fontSize: 11, color: c.modelled, marginTop: 8 }}>
+            Asked for {shortDate(chart.requested_from)}; this instrument was first traded{" "}
+            {shortDate(firstDrawnDay)}. Showing everything there is rather than drawing a line for
+            days it was not owned.
+          </div>
+        )}
       </Panel>
 
       <TableFrame>
@@ -360,7 +493,11 @@ export function Instrument() {
                     {row ? decimalPercent(row.benchmark_return) : "—"}
                   </Td>
                   <Td align="right" numeric>
-                    <ExcessCell row={row} basis={comparison?.basis ?? ""} />
+                    <ExcessCell
+                      row={row}
+                      basis={comparison?.basis ?? ""}
+                      ter={activeBenchmark?.ter ?? null}
+                    />
                   </Td>
                 </tr>
               );
