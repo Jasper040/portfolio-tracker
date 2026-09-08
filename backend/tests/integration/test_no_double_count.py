@@ -60,6 +60,13 @@ EXEMPT_FILES = (
     # Upserts both columns into the price cache, once, from a fetched or
     # manual series. This IS the boundary the rest of the rule protects.
     "ingest/prices.py",
+    # The same boundary for `benchmark_daily`, split out of the file above in
+    # PT-33. `benchmark_daily` stores both closes because the provider returns
+    # both in one response and re-fetching the other half later is a request no
+    # free provider has reason to keep serving; only the adjusted one is ever
+    # read, by `analytics/benchmark_return.py`. A cache boundary that stores
+    # what it was given is the thing Sec 7.5 exists to make possible.
+    "ingest/benchmark_prices.py",
 )
 
 #: Whole packages exempt for the same reason.
