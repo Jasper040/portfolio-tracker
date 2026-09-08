@@ -18,7 +18,7 @@
  *  `chart.coverage` is the instrument's own price series, and reuses
  *  `MethodBadge` exactly as `Positions.tsx` does for a lot-matched response --
  *  `method` is always `null` here, which is a real answer, not an omission
- *  (see `api/types.ts`). `chart.comparison.coverage` is the BENCHMARK's own
+ *  (see `api/types.ts`). `chart.comparison.span` is the BENCHMARK's own
  *  SPAN across the holding, a different measurement with the same vocabulary
  *  (`backend/app/analytics/instrument_return.py`'s `Comparison.coverage`
  *  docstring spells out why). Rendering it through `MethodBadge` would make it
@@ -62,7 +62,7 @@ import { fetchBenchmarks, fetchInstrumentChart, fetchInstruments, type Range } f
 import type {
   Benchmark,
   Comparison,
-  Coverage,
+  SpanCoverage,
   Interval,
   InstrumentChart,
   InstrumentSummary,
@@ -93,10 +93,9 @@ const INTERVAL_COLUMNS: readonly ColumnDef[] = [
 /** Same tone table as `MethodBadge`'s, kept private and separate on purpose:
  *  the two badges must never share a component, or a future edit to one would
  *  silently restyle the other into looking like the same judgement. */
-const SPAN_TONE: Record<Coverage, { color: string; label: string }> = {
+const SPAN_TONE: Record<SpanCoverage, { color: string; label: string }> = {
   full: { color: c.textMuted, label: "FULL" },
   partial: { color: c.modelled, label: "PARTIAL" },
-  manual: { color: c.modelled, label: "MANUAL" },
   missing: { color: c.negative, label: "MISSING" },
 };
 
@@ -104,8 +103,8 @@ const SPAN_TONE: Record<Coverage, { color: string; label: string }> = {
  *  component's "COVERAGE" label is the staleness judgement everywhere else in
  *  this app, and this is a span judgement instead -- see this file's own
  *  docstring and `Comparison.coverage` on the backend. */
-function BenchmarkSpanBadge({ coverage }: { coverage: Coverage }) {
-  const tone = SPAN_TONE[coverage];
+function BenchmarkSpanBadge({ span }: { span: SpanCoverage }) {
+  const tone = SPAN_TONE[span];
   return (
     <span
       title="How much of the holding the benchmark series itself spans -- not how stale it is. A different question from the coverage badge above."
@@ -450,7 +449,7 @@ export function Instrument() {
           <MethodBadge method={chart.method} coverage={chart.coverage} />
           {/* The benchmark's own span coverage -- a different judgement, kept
               in its own component so it cannot read as the same badge above. */}
-          {comparison && <BenchmarkSpanBadge coverage={comparison.coverage} />}
+          {comparison && <BenchmarkSpanBadge span={comparison.span} />}
         </div>
         {/* A statement about the QUESTION, not the answer -- the same note
             `CoverageStrip` puts under the portfolio value chart, and for the

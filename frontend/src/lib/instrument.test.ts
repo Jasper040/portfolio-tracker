@@ -60,7 +60,7 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
     linked_instrument_return: "0.05",
     linked_benchmark_return: "0.04",
     linked_excess: "0.01",
-    coverage: "full",
+    span: "full",
     ...overrides,
   };
 }

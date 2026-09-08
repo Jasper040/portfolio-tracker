@@ -19,7 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, field_serializer
 
 from app.models.ledger import Lot, LotClosure, Transaction
-from app.models.types import Coverage
+from app.models.types import Coverage, SpanCoverage
 
 #: Which lot-matching method produced the realised figures in a response.
 #: `None` is a real answer, not a missing one: it means no matching was applied,
@@ -403,9 +403,10 @@ class ComparisonOut(BaseModel):
     never the differencing. Both are worth stating and only one of them fits in
     a field.
 
-    `coverage` is the BENCHMARK's span coverage, not the instrument's own --
-    see `Comparison.coverage`'s docstring for why the two are a different
-    judgement and must not be confused.
+    `span` is the BENCHMARK's span, not the instrument's staleness, and it
+    carries its own `SpanCoverage` type so the two cannot be aggregated by
+    accident -- see `Comparison.span` and `models/types.py` for why one name and
+    one type made the wrong line the obvious one to write.
     """
 
     basis: str
@@ -416,7 +417,7 @@ class ComparisonOut(BaseModel):
     linked_instrument_return: Decimal | None
     linked_benchmark_return: Decimal | None
     linked_excess: Decimal | None
-    coverage: Coverage
+    span: SpanCoverage
 
     @field_serializer(
         "linked_instrument_return", "linked_benchmark_return", "linked_excess"

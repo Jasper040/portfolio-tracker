@@ -302,7 +302,7 @@ def test_a_benchmark_with_no_data_yields_null_excess_and_a_reason(seeded_no_benc
     assert result.intervals[0].excess is None
     assert result.intervals[0].reason
     assert result.linked_excess is None
-    assert result.coverage == "missing"
+    assert result.span == "missing"
 
 
 def test_the_instrument_return_survives_a_benchmark_outage(seeded_no_benchmark) -> None:
@@ -354,7 +354,7 @@ def test_an_instrument_priced_for_part_of_the_holding_yields_no_excess(
     assert "not the whole of" in (row.reason or "")
     assert result.linked_excess is None
     # The badge on this object is the BENCHMARK's, and the benchmark is fine.
-    assert result.coverage == "full"
+    assert result.span == "full"
 
 
 def test_a_benchmark_covering_part_of_the_holding_yields_no_excess(
@@ -372,7 +372,7 @@ def test_a_benchmark_covering_part_of_the_holding_yields_no_excess(
     assert row.excess is None
     assert KEY in (row.reason or "")
     assert "not the whole of" in (row.reason or "")
-    assert result.coverage == "partial"
+    assert result.span == "partial"
     assert result.linked_excess is None
 
 
@@ -392,7 +392,7 @@ def test_a_benchmark_day_that_cannot_be_converted_shows_on_the_badge(
     assert row.benchmark_return == D("0.10")  # 50.00 -> 55.00 at 1.00 USD/EUR
     assert row.excess == D("0.02")
     assert row.reason is None
-    assert result.coverage == "partial"
+    assert result.span == "partial"
     assert [p.on for p in result.benchmark_index] == [SECOND_DAY, HELD.end]
 
 
@@ -414,3 +414,38 @@ def test_one_unmeasurable_run_makes_the_whole_linked_return_null(
     assert result.linked_instrument_return is None
     assert result.linked_benchmark_return is not None
     assert result.linked_excess is None
+
+
+def test_the_span_vocabulary_cannot_express_manual() -> None:
+    """`manual` is a claim about where a PRICE came from, and a span has no
+    such claim to make.
+
+    `_span_coverage` never calls `classify()` -- a `TotalReturnPoint` carries
+    no `source` -- so `manual` was structurally unreachable while the span
+    still borrowed the four-value `Coverage`. An unreachable member is not
+    harmless: the screen rendered a `BENCHMARK SPAN - MANUAL` badge that could
+    never legitimately fire, and every reader had to work out for themselves
+    that it could not.
+
+    A narrower type deletes the question rather than documenting it (PT-32).
+    """
+    from typing import get_args
+
+    from app.models.types import SpanCoverage
+
+    assert set(get_args(SpanCoverage)) == {"missing", "partial", "full"}
+
+
+def test_the_comparison_names_its_span_a_span(seeded) -> None:
+    """Not `coverage`.
+
+    Staleness and span are different judgements, and the chart endpoint returns
+    one of each, side by side, as `chart.coverage` and the comparison's own.
+    While both were called `coverage` and typed `Coverage`, the obvious thing to
+    write -- `worst_coverage([chart.coverage, comparison.coverage])` -- ranked a
+    benchmark's span shortfall against a price's staleness and produced a number
+    meaning nothing, with nothing in the type system to stop it.
+    """
+    result = comparison(seeded, ISIN, benchmark_key=KEY, intervals=[HELD])
+    assert result.span in {"missing", "partial", "full"}
+    assert not hasattr(result, "coverage")

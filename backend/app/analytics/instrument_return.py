@@ -46,24 +46,29 @@ from sqlmodel import Session
 from app.analytics.adjusted import TotalReturnPoint
 from app.analytics.benchmark_return import benchmark_total_return_series
 from app.analytics.quotes import (
-    FULL,
-    MISSING,
-    PARTIAL,
     STALE_DAYS,
     Quote,
     base_currency,
     in_base,
     rate_history,
-    worst_coverage,
 )
 from app.analytics.total_return import total_return_series
 from app.models.market import FxDaily
-from app.models.types import Coverage
+from app.models.types import SpanCoverage
 
 #: Every return on this object is a total return. Stated on the object rather
 #: than assumed by the reader -- parent doc Sec 7.4: no endpoint returns an
 #: unlabelled return.
 BASIS = "total_return"
+
+#: The span vocabulary's own constants. `quotes.py` exports `FULL`, `PARTIAL`
+#: and `MISSING` typed `Coverage`, so returning one of those from a
+#: `SpanCoverage` function is precisely the mix this type split exists to
+#: prevent -- and mypy rejects it, which is the split earning its keep on the
+#: first edit after it landed.
+SPAN_FULL: SpanCoverage = "full"
+SPAN_PARTIAL: SpanCoverage = "partial"
+SPAN_MISSING: SpanCoverage = "missing"
 
 ONE = Decimal("1")
 HUNDRED = Decimal("100")
@@ -164,11 +169,15 @@ class Comparison:
     #:   end, or some of its days had no rate to reach the base currency;
     #: * `full` -- the benchmark spans every in-market interval.
     #:
-    #: Same type and same vocabulary as the price side, deliberately, because
-    #: both answer "how much of what you asked for could be accounted for"
-    #: (design doc Sec 8.1). Two different measurements of that, though, and a
-    #: reader who assumes this one is about staleness will misread it.
-    coverage: Coverage
+    #: A DIFFERENT type from the price side's `Coverage`, and named for what it
+    #: measures rather than for the family it belongs to. Both answer "how much
+    #: of what you asked for could be accounted for" (design doc Sec 8.1), but
+    #: they answer it about different things -- and while they shared a name and
+    #: a type, `worst_coverage([chart.coverage, comparison.coverage])` was the
+    #: obvious line to write, typechecked, and meant nothing. `SpanCoverage`
+    #: also drops `manual`, which was unreachable here; see the type's own
+    #: comment in `models/types.py`.
+    span: SpanCoverage
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,9 +236,29 @@ def _rebase(
     return index, window[-1].value / first - ONE
 
 
+#: Worst news first, over the span vocabulary only. A private twin of
+#: `quotes.worst_coverage` rather than a call into it: that function ranks
+#: STALENESS and hands back a `Coverage`, so routing spans through it would
+#: return a type that can say `manual` and reintroduce, at the boundary, exactly
+#: the confusion `SpanCoverage` exists to remove.
+_SPAN_SEVERITY: dict[SpanCoverage, int] = {SPAN_FULL: 0, SPAN_PARTIAL: 1, SPAN_MISSING: 2}
+
+
+def _worst_span(values: Sequence[SpanCoverage]) -> SpanCoverage:
+    """The most severe span among `values`.
+
+    Empty defaults to `full`, matching `quotes.worst_coverage`, and the case is
+    unreachable here anyway -- a comparison with no in-market interval returns
+    early. Whether "the coverage of nothing" should be `full` or `missing` is a
+    real question the codebase currently answers both ways; it is PT-33's, and
+    deliberately not settled inside a rename.
+    """
+    return max(values, key=lambda value: _SPAN_SEVERITY[value], default=SPAN_FULL)
+
+
 def _span_coverage(
     points: Sequence[_BasePoint], start: date, end: date, measured: Decimal | None
-) -> Coverage:
+) -> SpanCoverage:
     """How much of `start`..`end` the series actually spans.
 
     `STALE_DAYS` is borrowed from `quotes.py` deliberately: it is already this
@@ -240,19 +269,19 @@ def _span_coverage(
     avoid.
     """
     if measured is None:
-        return MISSING
+        return SPAN_MISSING
     window = [p for p in points if start <= p.on <= end]
     if not window:
-        return MISSING
+        return SPAN_MISSING
     # Compound names, so no local variable here can collide with the leak
     # scanner's token list: it matches whole words case-insensitively, and an
     # underscore is a word character.
     opening_gap = (window[0].on - start).days
     closing_gap = (end - window[-1].on).days
     return (
-        PARTIAL
+        SPAN_PARTIAL
         if opening_gap > STALE_DAYS or closing_gap > STALE_DAYS
-        else FULL
+        else SPAN_FULL
     )
 
 
@@ -284,7 +313,7 @@ def _empty(benchmark_key: str) -> Comparison:
         linked_instrument_return=None,
         linked_benchmark_return=None,
         linked_excess=None,
-        coverage=MISSING,
+        span=SPAN_MISSING,
     )
 
 
@@ -292,13 +321,13 @@ def _side_reason(
     what: str,
     points: Sequence[_BasePoint],
     interval: HoldingInterval,
-    coverage: Coverage,
+    coverage: SpanCoverage,
 ) -> str | None:
     """Why one side could not be measured over the whole of `interval`."""
     span = f"{interval.start} to {interval.end}"
-    if coverage == MISSING:
+    if coverage == SPAN_MISSING:
         return f"no {what} data from {span}"
-    if coverage == PARTIAL:
+    if coverage == SPAN_PARTIAL:
         window = [p for p in points if interval.start <= p.on <= interval.end]
         return (
             f"{what} covers {window[0].on} to {window[-1].on}, "
@@ -312,9 +341,9 @@ def _reason(
     benchmark_key: str,
     interval: HoldingInterval,
     instrument: Sequence[_BasePoint],
-    instrument_coverage: Coverage,
+    instrument_coverage: SpanCoverage,
     benchmark: Sequence[_BasePoint],
-    benchmark_coverage: Coverage,
+    benchmark_coverage: SpanCoverage,
 ) -> str | None:
     """Why the excess is `None`. `None` when it is not.
 
@@ -369,7 +398,7 @@ def comparison(
     instrument_index: list[IndexPoint] = []
     benchmark_index: list[IndexPoint] = []
     rows: list[IntervalExcess] = []
-    coverages: list[Coverage] = []
+    spans: list[SpanCoverage] = []
 
     for interval in held:
         # Step 3: rebased at THIS interval's start, so the answer is a property
@@ -377,7 +406,7 @@ def comparison(
         own_index, own_return = _rebase(instrument, interval.start, interval.end)
         bench_index, bench_return = _rebase(benchmark, interval.start, interval.end)
         # Both sides get the same span test. Only the benchmark's answer reaches
-        # the badge -- see `Comparison.coverage` -- but both reach the reason,
+        # the badge -- see `Comparison.span` -- but both reach the reason,
         # because either side falling short makes the difference meaningless.
         own_coverage = _span_coverage(
             instrument, interval.start, interval.end, own_return
@@ -385,7 +414,7 @@ def comparison(
         bench_coverage = _span_coverage(
             benchmark, interval.start, interval.end, bench_return
         )
-        coverages.append(bench_coverage)
+        spans.append(bench_coverage)
 
         reason = _reason(
             isin,
@@ -429,12 +458,12 @@ def comparison(
         else None
     )
 
-    coverage = worst_coverage(coverages)
+    span = _worst_span(spans)
     if benchmark_dropped:
         # Days the benchmark could not be expressed in the owner's currency at
         # all. They do not move an endpoint-to-endpoint return, but the series
         # the reader sees is shorter than the one the provider sent.
-        coverage = worst_coverage([coverage, PARTIAL])
+        span = _worst_span([span, SPAN_PARTIAL])
 
     return Comparison(
         basis=BASIS,
@@ -445,5 +474,5 @@ def comparison(
         linked_instrument_return=linked_instrument,
         linked_benchmark_return=linked_benchmark,
         linked_excess=linked_excess,
-        coverage=coverage,
+        span=span,
     )
