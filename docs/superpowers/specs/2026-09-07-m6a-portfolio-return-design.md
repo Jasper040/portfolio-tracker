@@ -17,9 +17,10 @@ a fixture.
 
 ## 1. What this is
 
-§10 gives M6 one row: "TWR / MWR / attribution — Performance page; industry weight over
-time; contribution to return." That row describes two bodies of work with a dependency
-between them, and this document takes the first.
+§10 carries M6 as two rows against one epic. It was one — "TWR / MWR / attribution —
+Performance page; industry weight over time; contribution to return" — and that row
+described two bodies of work with a dependency between them. This document takes the
+first.
 
 **M6a is portfolio-level time-weighted return.** A daily chain-linked series, a figure
 for any window, compared against one benchmark, labelled. It reads series that M2 and M3

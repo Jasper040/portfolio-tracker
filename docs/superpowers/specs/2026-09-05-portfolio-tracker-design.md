@@ -451,17 +451,31 @@ API response schemas **cannot be constructed** without `method` and `coverage` f
 
 ## 10. Milestones
 
-| # | Slice | Visible outcome |
-|---|---|---|
-| M0 | Ledger + both DeGiro parsers + quarantine | Browser table of all transactions, `raw_json` inspectable, batch undo, cross-file reconciliation report green |
-| M1 | Lots, closures, FIFO/LIFO/HIFO, splits, `rebuild()` | Lot table per source spec §5, method switcher, **ORN = 32 shares matching Portfolio.csv** |
-| M2 | Prices, FX, valuation, coverage | Portfolio value chart; positions table; coverage strip |
-| M3 | Instrument chart | Markers, holding bands, in/out-of-market intervals, benchmark rebased at entry, excess return over holding period |
-| M4 | Counterfactuals | Ranked sell-decision table (both framings) plus shadow portfolio with its assumption printed |
-| M5 | Dividends | Gross/tax/net per instrument per year; yield-on-cost vs yield-on-market labelled; calendar; forward estimate marked as an estimate |
-| M6 | TWR / MWR / attribution | Performance page; industry weight over time; contribution to return |
-| M7 | SnapTrade + reconciliation | Disagreement report |
-| M8 | News on demand | Chart markers plus drill-down, cached, fetch-on-click only |
+| # | Epic | Slice | Visible outcome |
+|---|---|---|---|
+| M0 | PT-1 | Ledger + both DeGiro parsers + quarantine | Browser table of all transactions, `raw_json` inspectable, batch undo, cross-file reconciliation report green |
+| M1 | PT-2 | Lots, closures, FIFO/LIFO/HIFO, splits, `rebuild()` | Lot table per source spec §5, method switcher, **ORN = 32 shares matching Portfolio.csv** |
+| M2 | PT-3 | Prices, FX, valuation, coverage | Portfolio value chart; positions table; coverage strip |
+| M3 | PT-4 | Instrument chart | Markers, holding bands, in/out-of-market intervals, benchmark rebased at entry, excess return over holding period |
+| M4 | PT-5 | Counterfactuals | Ranked sell-decision table (both framings) plus shadow portfolio with its assumption printed |
+| M5 | PT-6 | Dividends | Gross/tax/net per instrument per year; yield-on-cost vs yield-on-market labelled; calendar; forward estimate marked as an estimate |
+| M6a | PT-7 | Portfolio return | Time-weighted return series and window figure, cash included and contributing zero, one benchmark, labelled |
+| M6b | PT-7 | Attribution | MWR/XIRR beside TWR; contribution to return; industry weight over time |
+| M7 | PT-8 | SnapTrade + reconciliation | Disagreement report |
+| M8 | PT-9 | News on demand | Chart markers plus drill-down, cached, fetch-on-click only |
+
+**This table states scope, never status.** Which milestones are done lives on the Jira
+board and nowhere else — see `docs/TRACKING.md`. A status column here would be a second
+source of truth, and it would be the one that goes stale.
+
+**Why M6 is two rows against one epic.** The original M6 row bundled TWR, MWR and
+attribution, and there is a dependency inside that bundle: attribution and MWR/XIRR need
+each dividend attributed to the instrument that paid it, which is M5, while the return
+series needs nothing M2 and M3 have not already built. Splitting lets the first half
+proceed on its own dependencies. The two share epic PT-7 rather than taking a new one —
+deliberately 2:1 against the convention in `docs/TRACKING.md`, because the alternative
+places attribution behind M8, and a worse ordering is a higher price than a bent rule.
+Design: `docs/superpowers/specs/2026-09-07-m6a-portfolio-return-design.md`.
 
 **Change from the Step 0 plan:** `Account.csv` parsing moves from M5 into M0. Deposits,
 withdrawals, dividends and fees are needed for the cross-file reconciliation invariants
@@ -516,19 +530,22 @@ Coverage target 80%+, with `domain/` held higher — it is pure and has no excus
 
 ## 12. Open items
 
-1. **G — provider strategy.** "A free third party integration in between to easily sync
+Each item is tracked as the Jira issue named beside it. The *question* stays here; its
+*resolution* lives on the board, so this section never needs editing to stay true.
+
+1. **G — provider strategy.** (PT-20) "A free third party integration in between to easily sync
    data" is read as two separate needs: free-tier **price/FX** providers (M2 spike) and
    **SnapTrade** as the transaction-sync bridge (M7 spike). If the intent was that
    automatic transaction sync matters more than the milestone order implies, M7 should
    move ahead of M4 — flagged, not decided.
-2. **B2 wording.** Recorded as `PRODUCT_CHANGE` per DeGiro's own label, with the owner's
+2. **B2 wording.** (PT-21) Recorded as `PRODUCT_CHANGE` per DeGiro's own label, with the owner's
    "cancelled transaction" note attached. No ledger impact either way.
-3. **HKD** was not in the original currency picture. It appears via one Pacific Assurance
+3. **HKD** (PT-22) was not in the original currency picture. It appears via one Pacific Assurance
    dividend. FX coverage must include it.
-4. **Securities lending income** (+€11.21) is a new transaction type. Confirm it belongs
+4. **Securities lending income** (+€11.21, PT-23) is a new transaction type. Confirm it belongs
    in portfolio return — proposed: yes, as income, alongside dividends but reported
    separately.
-5. **Exchange code mapping.** DeGiro's `Reference exchange` codes need a mapping to real
+5. **Exchange code mapping.** (PT-24) DeGiro's `Reference exchange` codes need a mapping to real
    MICs for `instrument.exchange_mic`. Proposed: a small hand-maintained table in
    `config/`, defaulting to storing DeGiro's code verbatim when unmapped.
 
