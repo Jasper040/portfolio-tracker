@@ -19,9 +19,10 @@ Two working directories matter and they are not interchangeable:
 
 ```powershell
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+
+# uv reads .python-version (3.14) and uv.lock, builds backend/.venv, and installs
+# the exact locked versions. `--extra dev` adds pytest, ruff and mypy.
+uv sync --extra dev
 
 # The SQLite directory must exist first. SQLite does NOT create a missing
 # directory — it fails with "unable to open database file".
@@ -33,6 +34,42 @@ New-Item -ItemType Directory -Force data
 Copy-Item ..\.env.example .env
 ```
 
+`uv.lock` is committed on purpose. It pins all 50 packages, transitive ones
+included, so a fresh clone resolves the versions this ledger was verified against
+rather than whatever is newest that day. `pandas` is the reason it matters: a
+parsing or dtype change between minor releases can move a figure without raising
+anything. Regenerate it deliberately with `uv lock --upgrade`, as its own commit,
+and re-run the suite before keeping the result.
+
+pip remains supported — `[project.optional-dependencies]` is untouched, so
+`pip install -e ".[dev]"` still works. It just resolves fresh instead of locked.
+
+### The benchmark set
+
+`config/benchmarks.yaml` names the proxy the instrument chart compares against.
+It is **the only tracked file in `config/`** — every sibling is gitignored,
+because they are keyed by ISIN and an ISIN is a holding. This one is keyed by a
+lowercase slug (`world`), and `ingest/benchmarks.py` refuses a key with anything
+ISIN-shaped anywhere in it, so the file cannot become a leak by being edited.
+
+It is an **answer, not a lookup**. The symbol discriminator that guards
+`instrument_symbols.yaml` cannot run here: it validates a candidate series
+against the ledger's own executed prices for that instrument, and a benchmark was
+never traded, so there is nothing to check it against. Whatever symbol is written
+is used — with one guard, that the provider's own quoted currency matches the one
+configured, because that mismatch is otherwise invisible until after FX
+conversion.
+
+The repository ships one entry. An empty file is also legitimate: the comparison
+simply does not render, and a malformed one degrades to the same state with a
+warning naming the file rather than a startup traceback.
+
+Beware the leak scanner when editing the prose here. Index-family brand words are
+real tokens in the gitignored export — they appear inside the names of holdings —
+so writing one into this tracked file fails `test_no_real_data_committed`, however
+generic the word looks. The symbol carries the identity; the label only has to be
+readable on a chart legend.
+
 `backend/.env` after copying:
 
 ```ini
@@ -40,6 +77,22 @@ DATABASE_URL=sqlite:///./data/portfolio.sqlite
 LOT_METHOD=FIFO
 CORS_ORIGINS=http://localhost:5173
 ```
+
+> **There is exactly one backend virtualenv, and it lives at `backend/.venv`.**
+> A `.venv` at the *repo root* is not used by anything here. If one exists, the
+> shell that activates it has no `uvicorn`, no `fastapi` and no `app` package, and
+> every command in section 2 fails with `No module named uvicorn` — which reads as
+> a broken backend rather than as the wrong environment. Check which one is active
+> before debugging anything else:
+>
+> ```powershell
+> python -c "import sys; print(sys.prefix)"   # must end in \backend\.venv
+> ```
+>
+> A deleted venv can outlive itself: `VIRTUAL_ENV` stays set in any shell that
+> had activated it, and tools keep honouring the stale path. If `$env:VIRTUAL_ENV`
+> names a directory that no longer exists, open a new terminal — nothing in that
+> one will resolve correctly.
 
 ### Frontend
 
@@ -63,9 +116,12 @@ mount and will show its error state if the API is not up.
 
 ```powershell
 cd backend
-.\.venv\Scripts\Activate.ps1
-python -m uvicorn app.main:create_app --factory --reload --port 8000
+uv run uvicorn app.main:create_app --factory --reload --port 8000
 ```
+
+`uv run` resolves the interpreter from `backend/.venv` itself, so there is no
+activation step to get wrong — which is the whole failure mode the note in
+section 1 describes. Activating and calling `python -m uvicorn ...` is equivalent.
 
 `app.main:create_app` is a factory, not a module-level `app`. Uvicorn detects that
 on its own, so omitting `--factory` still works — it just warns. Pass it anyway.
@@ -164,6 +220,7 @@ rows stay economic.
 | `python -m app.cli review` | Show the corporate-action review queue: what was detected, what is still open. Rebuilt by every import, so it always describes the export as it stands. |
 | `python -m app.cli batches` | List import batches, newest first. This is how to find a batch id after the terminal has scrolled. |
 | `python -m app.cli undo <batch-id>` | Remove every transaction from one batch. The ledger's only reversal mechanism. |
+| `python -m app.cli fetch-prices` | Fill the price, FX and benchmark caches. Three phases in order: instrument prices, then FX for every currency they arrived in, then benchmarks. Refuses everything, having written nothing, while any instrument symbol is unanswered — a partial cache reports `partial` as though a provider were at fault rather than a question being unanswered. Exits 1 on that refusal, 2 when a provider is unreachable or a hand-edited config file cannot be parsed. `--full` refetches the whole five-year history instead of only what is missing. |
 | `python -m app.cli reconcile <export-dir>` | Check the cross-file invariants between `Transactions.csv`, `Account.csv` and `Portfolio.csv` (design doc Sec 3.6). Exits non-zero on any failure. `Portfolio.csv` is optional; without it the cash invariant is skipped. |
 
 To try the app without touching real data, point it at the synthetic golden files —
@@ -182,6 +239,15 @@ python -m app.cli import ..\.scratch\golden-export --resolutions ..\config\corpo
 actions, while the default path holds the answers for your real export. Pointing at
 it explicitly keeps the two sets of answers from overwriting each other.
 
+**The benchmark phase runs last, and that is the point.** A wrong symbol in
+`config/benchmarks.yaml` must not cost the instrument phase its five-year
+backfill, so benchmarks are fetched after the price and FX rows are already
+committed. A benchmark failure is reported and exits non-zero without unwinding
+what succeeded, and a benchmark whose provider quotes it in a currency the config
+did not claim stores nothing at all — a proxy converted from the wrong currency
+draws a perfectly plausible line answering a different question from the one on
+the axis.
+
 `reconcile` does **not** pass on the golden files, and that is not a bug. The
 fixture reproduces the structural quirks of the export — the misaligned header, the
 byte-identical fills, the corporate-action pairs — not its cross-file arithmetic; it
@@ -197,8 +263,8 @@ the real export under `pytest -m realdata`.
 
 ```powershell
 cd backend
-python -m pytest                 # 304 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: 35 tests against the gitignored real exports.
+python -m pytest                 # 635 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 60 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.
@@ -206,6 +272,15 @@ python -m mypy app               # Strict type check.
 
 `pytest` excludes `realdata` via `addopts` in `pyproject.toml`, so a plain run
 never depends on whether the owner's gitignored exports happen to be on disk.
+
+> **A green `-m realdata` run is not the same as a complete one.** Fourteen of the
+> sixty skip when the price cache is empty, and they all carry the same reason:
+> `price cache is empty; run fetch-prices first`. Five of those are the instrument
+> chart's own acceptance tests, so a reader who sees `46 passed` and stops reading
+> will believe M3 was verified against the real export when it was not. Skips are
+> the right behaviour — a missing cache is not a defect — but the count that
+> matters is the skip count, not the colour. Import, then `fetch-prices`, then
+> re-run: sixty passed and nothing skipped is the acceptance run.
 
 The `realdata` suite states no figure of its own. `tests/integration/realdata_subject.py`
 reads the export at run time and works out what to assert — which instrument
@@ -292,22 +367,29 @@ backend/app/
   cli.py        import / batches / undo / reconcile
 
 frontend/src/
-  api/          Live client for /api/transactions, /api/lots, /api/closures
+  api/          Live client for /api/transactions, /api/lots, /api/closures,
+                /api/valuation, /api/positions, /api/instruments
   lib/          Pure domain logic: lot matching, TWR/MWR, formatting, tokens
   portfolio/    Data layer. fixtures.ts is MODELLED data; provider.ts is the seam
   components/   Chart primitives, UI primitives, layout
-  screens/      The ten screens, and the component tests for the live ones
+  screens/      The eleven screens, and the component tests for the live ones
 
 frontend/
   vite.config.ts    Dev server, and the Vitest environment/setup wiring
   vitest.setup.ts   jest-dom matchers plus the per-test unmount
 ```
 
-**Transactions** and **Lots** read the live API. The other eight are computed from
-`frontend/src/portfolio/fixtures.ts` and are badged `MODELLED` in the UI — the
-badge is driven by `LEDGER_BACKED` in `navigation.ts`, so a screen stops being
-badged the moment it is added to that set. Adding a screen to it without pointing
-it at a real endpoint is the one way to make the UI lie about its own provenance.
+**Transactions**, **Lots**, **Positions** and **Instrument** read the live API.
+The other seven are computed from `frontend/src/portfolio/fixtures.ts` and are
+badged `MODELLED` in the UI — the badge is driven by `LEDGER_BACKED` in
+`navigation.ts`, so a screen stops being badged the moment it is added to that
+set. Adding a screen to it without pointing it at a real endpoint is the one way
+to make the UI lie about its own provenance.
+
+**Instrument** is M3's, and it is a different screen from **Stock Detail**, which
+stays `MODELLED` on purpose. Stock Detail's remaining sections are filled by M4's
+counterfactuals and M5's dividend analytics; it retires when they land, and until
+then the two coexist rather than one half-replacing the other.
 
 > **Never name a source directory `data/`.** `.gitignore` has a bare `data/` rule
 > guarding real broker exports, and it matches at any depth — a
@@ -325,6 +407,8 @@ it at a real endpoint is the one way to make the UI lie about its own provenance
 | `ValidationError: database_url Field required` | No `.env` in the current directory | Copy `.env.example` to `backend/.env`, and run the API/CLI from `backend/` |
 | `Error loading ASGI app. Attribute "app" not found` | Pointed at `app.main:app`, which does not exist | Target the factory: `app.main:create_app --factory` |
 | `WARNING: ASGI app factory detected` | `--factory` omitted | Harmless — uvicorn detects it and proceeds. Pass `--factory` to silence it. |
+| `error: Multiple top-level packages discovered in a flat-layout: ['app', 'data']` during `pip install -e .` | setuptools auto-discovery saw both `app/` and `data/` and refused to guess which one is the package | Already fixed: `[tool.setuptools.packages.find] include = ["app*"]` in `backend/pyproject.toml`. If it returns, something removed that table — do not "fix" it by deleting `data/`. |
+| `sqlite3.OperationalError: no such column: transaction.<name>` | The database file predates a column the models have since added. `SQLModel.metadata.create_all` creates *missing tables*; it never alters an existing one, so there is no automatic migration | Delete `backend/data/portfolio.sqlite` and re-import (section 3). Check the row counts first if you are unsure what the file holds. |
 | Vite reports "Port 5173 is in use" | A stale dev server from an earlier session | `netstat -ano \| Select-String ":5173"`, then `taskkill /PID <pid> /F` |
 | Numbers change when switching FIFO/LIFO/HIFO | Expected | The lot method changes every realised figure. TWR and MWR do **not** change — they are cashflow-based, not lot-based. |
 
@@ -334,3 +418,28 @@ it at a real endpoint is the one way to make the UI lie about its own provenance
 netstat -ano | Select-String ":5173.*LISTENING"
 taskkill /PID <pid> /F
 ```
+
+---
+
+## 7. Tracking work
+
+Bugs, follow-ups, backlog items and the M0–M8 milestones live in Jira project **`PT`**, not
+in this repo. The convention — including what may never be written into a Jira issue — is
+`docs/TRACKING.md`.
+
+Nothing in the docs states a status. If you want to know what is open, ask the board:
+
+```jql
+project = PT AND statusCategory != Done ORDER BY created ASC
+```
+
+Two queries answer most questions:
+
+```jql
+project = PT AND labels = "operator-action" AND statusCategory != Done   -- waiting on you
+project = PT AND labels = carried AND statusCategory != Done             -- deferred debt
+```
+
+`operator-action` is the one worth checking before a session: it is work a machine must not
+do for you, such as answering a symbol in `config/instrument_symbols.yaml`, where the answer
+is taken as authoritative and deliberately not re-validated against the ledger.

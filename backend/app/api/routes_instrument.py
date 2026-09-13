@@ -217,7 +217,7 @@ def _comparison_out(
         linked_instrument_return=result.linked_instrument_return,
         linked_benchmark_return=result.linked_benchmark_return,
         linked_excess=result.linked_excess,
-        coverage=result.coverage,
+        span=result.span,
     )
 
 

@@ -54,14 +54,12 @@ from decimal import Decimal
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.analytics.prices import price_history, quote_for
+from app.analytics.prices import price_history, priced
 from app.analytics.quotes import (
     FULL,
     MISSING,
     PARTIAL,
     base_currency,
-    classify,
-    in_base,
     rate_history,
     worst_coverage,
 )
@@ -171,23 +169,17 @@ def _value_day(
     missing = False
 
     for holding in sorted(holdings, key=lambda row: row.isin):
-        quote = quote_for(holding.isin, day, prices)
-        converted = (
-            None
-            if quote is None
-            else in_base(quote, holding.quantity, day, base, rates)
+        result = priced(
+            holding.isin, day, holding.quantity, base=base, history=prices, rates=rates
         )
-        if quote is None or converted is None:
+        verdicts.append(result.coverage)
+        if result.value is None:
             missing = True
-            verdicts.append(MISSING)
             continue
 
-        value, age = converted
-        verdict = classify(quote.source, age)
-        verdicts.append(verdict)
-        total += value
-        if verdict != PARTIAL:
-            covered += value
+        total += result.value
+        if result.coverage != PARTIAL:
+            covered += result.value
 
     coverage = worst_coverage(verdicts)
     if missing:

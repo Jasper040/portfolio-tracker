@@ -14,12 +14,10 @@ import pytest
 from sqlmodel import Session, select
 
 from app.db import create_engine_and_tables
+from app.ingest.benchmark_prices import BenchmarkFetchReport, fetch_benchmarks
 from app.ingest.benchmarks import Benchmark
-from app.ingest.prices import BenchmarkFetchReport, fetch_benchmarks
 from app.models.market import BenchmarkDaily
 from app.providers.base import PricePoint, PriceSeries
-
-TODAY = date(2026, 9, 7)
 
 WORLD = Benchmark(key="world", symbol="AAA.XX", currency="EUR",
                   name="A proxy", ter=D("0.20"))
@@ -67,7 +65,7 @@ TWO_DAYS = (
 
 def test_writes_a_row_per_day(engine) -> None:
     provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
-    report = fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    report = fetch_benchmarks(engine, provider, [WORLD])
 
     assert report.fetched == ("world",)
     assert report.failed == ()
@@ -82,7 +80,7 @@ def test_writes_a_row_per_day(engine) -> None:
 def test_an_unknown_symbol_is_a_named_failure_not_an_exception(engine) -> None:
     """M3 section 4.4: the config is the answer, so the only useful report is
     that the answer is wrong. Naming the slug is the whole value."""
-    report = fetch_benchmarks(engine, FakeProvider(), [WORLD], today=TODAY)
+    report = fetch_benchmarks(engine, FakeProvider(), [WORLD])
 
     assert report.fetched == ()
     assert len(report.failed) == 1
@@ -95,10 +93,14 @@ def test_a_second_run_writes_nothing_new(engine) -> None:
     """Idempotent, like the instrument phase. The unique constraint would raise
     on a re-insert, so this failing looks like a crash rather than a duplicate."""
     provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
-    fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
-    second = fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    fetch_benchmarks(engine, provider, [WORLD])
+    second = fetch_benchmarks(engine, provider, [WORLD])
 
-    assert second.rows_written == 0
+    # One row RE-written, not one row added. `rows_written` counts inserts plus
+    # updates since PT-33, so it means what `FetchResult.price_rows` has always
+    # meant; the load-bearing assertion is the one below, that the table still
+    # holds two rows rather than four.
+    assert second.rows_written == 2
     with Session(engine) as session:
         assert len(session.exec(select(BenchmarkDaily)).all()) == 2
 
@@ -110,13 +112,13 @@ def test_a_revised_bar_updates_the_stored_row_instead_of_being_skipped(engine) -
     dead cost -- a revision would be fetched and then silently discarded.
     """
     provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
-    fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    fetch_benchmarks(engine, provider, [WORLD])
 
     revised = series((date(2026, 9, 4), "999.00", "888.00"))
     provider.known["AAA.XX"] = revised
-    second = fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    second = fetch_benchmarks(engine, provider, [WORLD])
 
-    assert second.rows_written == 0
+    assert second.rows_written == 1
     with Session(engine) as session:
         rows = session.exec(select(BenchmarkDaily)).all()
     assert len(rows) == 2
@@ -127,18 +129,18 @@ def test_a_revised_bar_updates_the_stored_row_instead_of_being_skipped(engine) -
 
 def test_the_second_run_is_incremental(engine) -> None:
     provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
-    fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    fetch_benchmarks(engine, provider, [WORLD])
     provider.calls.clear()
-    fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    fetch_benchmarks(engine, provider, [WORLD])
 
     assert provider.calls == [("AAA.XX", date(2026, 9, 4))]
 
 
 def test_full_refetches_the_whole_window(engine) -> None:
     provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
-    fetch_benchmarks(engine, provider, [WORLD], today=TODAY)
+    fetch_benchmarks(engine, provider, [WORLD])
     provider.calls.clear()
-    fetch_benchmarks(engine, provider, [WORLD], full=True, today=TODAY)
+    fetch_benchmarks(engine, provider, [WORLD], full=True)
 
     assert provider.calls == [("AAA.XX", None)]
 
@@ -147,12 +149,39 @@ def test_one_failing_benchmark_does_not_stop_the_next(engine) -> None:
     other = Benchmark(key="europe", symbol="BBB.XX", currency="EUR",
                       name="Another", ter=D("0.12"))
     provider = FakeProvider({"BBB.XX": series(*TWO_DAYS)})
-    report = fetch_benchmarks(engine, provider, [WORLD, other], today=TODAY)
+    report = fetch_benchmarks(engine, provider, [WORLD, other])
 
     assert report.fetched == ("europe",)
     assert [key for key, _ in report.failed] == ["world"]
 
 
 def test_no_benchmarks_configured_is_not_an_error(engine) -> None:
-    report = fetch_benchmarks(engine, FakeProvider(), [], today=TODAY)
+    report = fetch_benchmarks(engine, FakeProvider(), [])
     assert report == BenchmarkFetchReport(fetched=(), failed=(), rows_written=0)
+
+
+def test_a_currency_the_provider_disagrees_with_stores_nothing(engine) -> None:
+    """`Benchmark.currency` was required from the operator and never read.
+
+    A field that can only ever be wrong in silence is worse than no field. A
+    proxy quoted in a currency the operator did not expect still converts, still
+    rebases and still draws -- as a plausible line answering a different question
+    from the one on the axis, which is the failure mode this whole module is
+    written to avoid.
+
+    Nothing is stored, and the reason names both currencies, because a benchmark
+    the reader can see is a benchmark the reader will trust.
+    """
+    provider = FakeProvider({"AAA.XX": series(*TWO_DAYS)})
+    elsewhere = Benchmark(
+        key="world", symbol="AAA.XX", currency="JPY", name="Global market", ter=D("0.22")
+    )
+    report = fetch_benchmarks(engine, provider, [elsewhere])
+
+    assert report.fetched == ()
+    assert report.rows_written == 0
+    [(key, reason)] = report.failed
+    assert key == "world"
+    assert "JPY" in reason
+    with Session(engine) as session:
+        assert session.exec(select(BenchmarkDaily)).all() == []

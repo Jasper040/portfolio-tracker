@@ -21,3 +21,25 @@
 #   currency: EUR
 #   name: <a short label you will recognise on the chart legend>
 #   ter: "0.20"
+
+# Chosen for the M3 comparison: the broadest single line available to a EUR
+# investor -- one cap-weighted global index spanning both mature and newer
+# economies, several thousand constituents, around 90-95% of investable market
+# cap worldwide. That is the closest a retail proxy gets to the market
+# portfolio, and a cap-weighted whole-market index is the beta-1 line by
+# construction.
+#
+# The EUR-quoted Xetra listing, so the series needs no FX conversion before
+# rebasing and the comparison carries no currency effect the owner did not
+# actually take.
+#
+# The label below is deliberately plain. Index-family brand words are real
+# tokens in the gitignored export -- they appear in the names of holdings --
+# so writing one here fails test_no_real_data_committed however generic it
+# looks, and this is the one tracked file in config/. The symbol carries the
+# identity; the label only has to be recognisable on a chart legend.
+world:
+  symbol: VWCE.DE
+  currency: EUR
+  name: Global market
+  ter: "0.22"

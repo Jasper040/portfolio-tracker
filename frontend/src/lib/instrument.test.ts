@@ -60,7 +60,7 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
     linked_instrument_return: "0.05",
     linked_benchmark_return: "0.04",
     linked_excess: "0.01",
-    coverage: "full",
+    span: "full",
     ...overrides,
   };
 }
@@ -108,7 +108,19 @@ describe("marker symbol size", () => {
 
 describe("in-market bands", () => {
   it("marks one markArea entry per in-market interval, at its own dates", () => {
+    // `points` spans the intervals on purpose. It did not until PT-29, and that
+    // is precisely why the bug survived: with the default single-point fixture
+    // every interval here was off-axis, so this test asserted that an
+    // unresolvable category passes through verbatim -- which is the defect, not
+    // the behaviour. A fixture whose intervals and points describe the same
+    // span is the only one that can tell the two apart.
     const c = chart({
+      points: [
+        point({ date: "2025-01-01" }),
+        point({ date: "2025-01-31" }),
+        point({ date: "2025-02-16" }),
+        point({ date: "2025-03-01" }),
+      ],
       intervals: [
         interval({ start: "2025-01-01", end: "2025-01-31", in_market: true }),
         interval({ start: "2025-02-01", end: "2025-02-15", in_market: false }),
@@ -129,6 +141,53 @@ describe("in-market bands", () => {
   it("draws no band at all for an out-of-market interval", () => {
     const c = chart({
       intervals: [interval({ start: "2025-01-01", end: "2025-01-31", in_market: false })],
+    });
+    const option = instrumentChartOption(c, { showBenchmark: false });
+    const price = (option.series as Array<Record<string, unknown>>)[0]!;
+    const markArea = price.markArea as { data: unknown[] };
+    expect(markArea.data).toHaveLength(0);
+  });
+
+  it("starts a band at the first drawn date when the interval opened before the window", () => {
+    // The default 1Y view on a position opened years ago, which is the whole of
+    // PT-29. `intervals` is deliberately NOT clipped to the window -- an
+    // interval must carry its REAL entry date or the rebasing anchor moves with
+    // the range control -- so the band's own start is off-axis. Against a
+    // CATEGORY axis whose `data` is only the drawn dates, an unresolvable
+    // category becomes NaN and the polygon collapses to zero area, which reads
+    // as "never held" beside a subtitle promising "solid where held".
+    const c = chart({
+      points: [point({ date: "2025-03-03" }), point({ date: "2025-03-04" })],
+      intervals: [interval({ start: "2023-01-01", end: "2025-03-04" })],
+    });
+    const option = instrumentChartOption(c, { showBenchmark: false });
+    const price = (option.series as Array<Record<string, unknown>>)[0]!;
+    const markArea = price.markArea as { data: Array<Array<{ xAxis: string }>> };
+
+    expect(markArea.data).toHaveLength(1);
+    expect(markArea.data[0]?.[0]?.xAxis).toBe("2025-03-03");
+    expect(markArea.data[0]?.[1]?.xAxis).toBe("2025-03-04");
+  });
+
+  it("ends a band at the last drawn date when the interval is still open", () => {
+    const c = chart({
+      points: [point({ date: "2025-03-03" }), point({ date: "2025-03-04" })],
+      intervals: [interval({ start: "2025-03-03", end: "2099-12-31" })],
+    });
+    const option = instrumentChartOption(c, { showBenchmark: false });
+    const price = (option.series as Array<Record<string, unknown>>)[0]!;
+    const markArea = price.markArea as { data: Array<Array<{ xAxis: string }>> };
+
+    expect(markArea.data[0]?.[1]?.xAxis).toBe("2025-03-04");
+  });
+
+  it("draws no band for an interval that closed before the window opened", () => {
+    // Distinct from clamping: there is no visible extent to clamp TO, and a
+    // band pinned to the first drawn date would claim the position was held on
+    // days it was not.
+    const c = chart({
+      points: [point({ date: "2025-03-03" })],
+      intervals: [interval({ start: "2023-01-01", end: "2023-06-30" })],
     });
     const option = instrumentChartOption(c, { showBenchmark: false });
     const price = (option.series as Array<Record<string, unknown>>)[0]!;

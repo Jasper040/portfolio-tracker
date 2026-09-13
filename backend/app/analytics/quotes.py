@@ -51,7 +51,21 @@ _SEVERITY: dict[Coverage, int] = {FULL: 0, MANUAL: 1, PARTIAL: 2, MISSING: 3}
 
 
 def worst_coverage(values: Sequence[Coverage]) -> Coverage:
-    """The most severe coverage among `values`. Empty means nothing to cover."""
+    """The most severe coverage among `values`.
+
+    **Empty is `full`, and that is a decision rather than a fallback.** This
+    function reports the worst news among a set of observations, and an empty set
+    carries no bad news: a day on which nothing was held is not a badly covered
+    day. `valuation` depends on exactly that reading.
+
+    A caller for whom emptiness is ITSELF the bad news must say so at the call
+    site, because only the caller knows which kind of empty it has -- "no
+    holdings to cover" and "no observations at all" are different facts that
+    arrive here as the same empty list. `instrument_price` does say so, with an
+    explicit `if frozen else MISSING`: a price line with no points has not
+    covered anything. Both readings are correct; what would be wrong is leaving
+    the choice to a default that cannot see which one it is answering.
+    """
     return max(values, key=lambda value: _SEVERITY[value], default=FULL)
 
 
@@ -77,7 +91,7 @@ def rate_history(session: Session) -> dict[tuple[str, str], list[FxDaily]]:
     return history
 
 
-def latest_rate_on_or_before(rows: Sequence[FxDaily], on: date) -> FxDaily | None:
+def _latest_rate_on_or_before(rows: Sequence[FxDaily], on: date) -> FxDaily | None:
     found: FxDaily | None = None
     for row in rows:
         if row.rate_date > on:
@@ -103,7 +117,7 @@ def in_base(
     if quote.currency == base:
         return gross, age
 
-    rate_row = latest_rate_on_or_before(rates.get((quote.currency, base), ()), on)
+    rate_row = _latest_rate_on_or_before(rates.get((quote.currency, base), ()), on)
     if rate_row is None or rate_row.rate == 0:
         return None
     # `rate` is units of the quote currency per 1 unit of base -- the same

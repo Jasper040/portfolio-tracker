@@ -60,6 +60,13 @@ EXEMPT_FILES = (
     # Upserts both columns into the price cache, once, from a fetched or
     # manual series. This IS the boundary the rest of the rule protects.
     "ingest/prices.py",
+    # The same boundary for `benchmark_daily`, split out of the file above in
+    # PT-33. `benchmark_daily` stores both closes because the provider returns
+    # both in one response and re-fetching the other half later is a request no
+    # free provider has reason to keep serving; only the adjusted one is ever
+    # read, by `analytics/benchmark_return.py`. A cache boundary that stores
+    # what it was given is the thing Sec 7.5 exists to make possible.
+    "ingest/benchmark_prices.py",
 )
 
 #: Whole packages exempt for the same reason.
@@ -68,6 +75,26 @@ EXEMPT_PACKAGES = (
     # handing a `PriceSeries` to the boundary above. Nothing here computes a
     # return or a valuation from what it parses.
     "providers",
+)
+
+#: Endpoint modules exempt from the CALL-PATH rule below, dotted, each with a
+#: comment saying why. Same shape and same reasoning as `EXEMPT_FILES`: an
+#: exemption that is named and existence-checked is a decision someone made,
+#: whereas an endpoint the guard never looked at is an accident nobody sees.
+EXEMPT_ROUTES = (
+    # The instrument chart is the one screen that shows both lanes at once, and
+    # the M3 design says so in as many words -- "the chart needs both price
+    # columns at once where every prior reader needed exactly one". It presents
+    # them as two fields of one response: a price line off the unadjusted close,
+    # a total-return comparison off the adjusted one. Sec 7.5's harm is SUMMING
+    # the two into a third figure, and nothing here sums them.
+    #
+    # Note what this exemption does not cover. `routes_instrument` reaches no
+    # cash balance, so there is no dividend income for an adjusted close to be
+    # counted twice against. An endpoint reaching `analytics/valuation.py` AND
+    # the total-return module would be the real defect, and would not belong on
+    # this list -- it would belong in a bug report.
+    "app.api.routes_instrument",
 )
 
 def _is_exempt(path: Path) -> bool:
@@ -239,19 +266,98 @@ def test_valuation_no_longer_names_a_close_column_directly() -> None:
     assert UNADJUSTED not in names
     assert ADJUSTED not in names
 
-def test_total_return_reads_only_the_adjusted_close() -> None:
-    names = _identifiers(APP / "analytics" / "total_return.py")
+def test_the_adjusted_point_mapper_reads_only_the_adjusted_close() -> None:
+    """Was `test_total_return_reads_only_the_adjusted_close` until M6a split
+    `total_return.py` a second time. Re-pointed for exactly the reason the
+    unadjusted one above was: after the split neither reader names a column --
+    both go through `adjusted.py` -- so the old assertion would have passed
+    while quietly losing the half that checks the column is read SOMEWHERE."""
+    names = _identifiers(APP / "analytics" / "adjusted.py")
     assert ADJUSTED in names
     assert UNADJUSTED not in names
 
-def test_the_valuation_endpoints_cannot_reach_the_total_return_module() -> None:
+
+def test_neither_adjusted_reader_names_a_close_column_directly() -> None:
+    """Both read through `adjusted.py` now. Asserted so a future edit that
+    inlines a column read back into either reader has to argue with a test."""
+    for module in ("total_return.py", "benchmark_return.py"):
+        names = _identifiers(APP / "analytics" / module)
+        assert UNADJUSTED not in names, module
+        assert ADJUSTED not in names, module
+
+def _route_modules() -> list[str]:
+    """Every endpoint module under `api/`, discovered rather than listed.
+
+    Was a hardcoded pair of `routes_valuation` and `routes_positions` until M6a.
+    The module half of this file walks `app/` and subtracts a named exempt set
+    precisely so a new read-side module is covered the moment it exists, and
+    argues for that shape at length in the docstring above -- but the call-path
+    half did not follow its own advice, so `routes_instrument` arrived unguarded
+    and stayed that way for the whole of M3. Deriving the list is what makes the
+    next endpoint's arrival a decision rather than an omission.
+    """
+    return sorted(_module_name(path) for path in (APP / "api").glob("routes_*.py"))
+
+
+def test_the_route_modules_are_discovered_so_this_is_not_vacuous() -> None:
+    """The guard M1 learned to write, applied to the derived list. A call-path
+    assertion over an empty set of endpoints passes for the wrong reason, and a
+    glob that silently matches nothing is exactly how it would get there."""
+    modules = _route_modules()
+    assert modules
+    assert "app.api.routes_valuation" in modules
+    assert "app.api.routes_positions" in modules
+
+
+def test_the_exempt_routes_name_endpoints_that_actually_exist() -> None:
+    """An exemption for a deleted or renamed route is a hole nobody would
+    notice: it exempts nothing, while everyone reading this file believes it
+    exempts something specific. Same assertion, same reason, as the one over
+    `EXEMPT_FILES`."""
+    modules = _route_modules()
+    for route in EXEMPT_ROUTES:
+        assert route in modules, f"EXEMPT_ROUTES names {route!r}, which does not exist"
+
+
+def test_no_route_module_can_reach_the_total_return_module() -> None:
     """The call-path half. Two modules that each read one column would still
     double-count if one called the other."""
-    for endpoint in ("app.api.routes_valuation", "app.api.routes_positions"):
-        assert "app.analytics.total_return" not in _reachable_from(endpoint)
+    offenders = [
+        module
+        for module in _route_modules()
+        if module not in EXEMPT_ROUTES
+        and "app.analytics.total_return" in _reachable_from(module)
+    ]
+    assert not offenders, (
+        "these endpoints can reach the adjusted close through the total-return "
+        "module: " + ", ".join(offenders)
+    )
 
 def test_the_total_return_module_does_not_reach_valuation() -> None:
     assert "app.analytics.valuation" not in _reachable_from("app.analytics.total_return")
+
+
+def test_the_benchmark_reader_does_not_reach_the_instrument_reader() -> None:
+    """A benchmark is safe next to a valuation path; an instrument is not.
+
+    Reaching an INSTRUMENT's adjusted closes from a path that also values that
+    instrument at the unadjusted close plus cash is Sec 7.5's double count.
+    Reaching a BENCHMARK's is not: a benchmark is never held, pays the owner
+    nothing, and appears in no cash balance, so there is nothing to count twice.
+
+    While both readers shared `total_return.py` no endpoint could have the
+    second without the first, which is the position M6a's performance endpoint
+    would have been in -- needing a benchmark, and reaching an instrument's
+    adjusted closes to get one.
+
+    The `is_file` assertion is not decoration. `_reachable_from` skips a module
+    that does not exist, so without it this test passes vacuously for as long as
+    `benchmark_return.py` is absent -- which is the whole of the time it would
+    be reporting a guarantee nobody had built yet.
+    """
+    assert (APP / "analytics" / "benchmark_return.py").is_file()
+    reachable = _reachable_from("app.analytics.benchmark_return")
+    assert "app.analytics.total_return" not in reachable
 
 
 def test_the_instrument_price_module_cannot_reach_the_adjusted_close() -> None:

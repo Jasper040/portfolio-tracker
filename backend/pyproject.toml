@@ -1,3 +1,10 @@
+[build-system]
+# Declared explicitly rather than left to pip's legacy fallback: without this table
+# the build backend and its version are whatever the installing tool happens to
+# default to, which is not a property a reproducible setup should leave to chance.
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "portfolio-tracker"
 version = "0.1.0"
@@ -18,6 +25,17 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.3", "ruff>=0.8", "mypy>=1.13", "types-PyYAML>=6.0"]
+
+[tool.setuptools.packages.find]
+# `app` is the only package this distribution ships. Without an explicit include,
+# setuptools falls back to flat-layout auto-discovery, which scans backend/ for
+# top-level importable directories and refuses to build the moment it finds more
+# than one: `data/` (created by the runbook's own setup step, and again by the
+# first CLI import) is not on its built-in exclusion list the way `tests/` is.
+# The failure is "Multiple top-level packages discovered in a flat-layout" during
+# `pip install -e .`, and it strands the install before a single dependency is
+# resolved. Naming the package keeps discovery out of the loop entirely.
+include = ["app*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

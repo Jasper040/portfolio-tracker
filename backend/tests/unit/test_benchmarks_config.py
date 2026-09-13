@@ -141,3 +141,35 @@ def test_the_ter_is_a_decimal_never_a_float(tmp_path: Path) -> None:
     (bench,) = load_benchmarks(path)
     assert bench.ter == D("0.07")
     assert isinstance(bench.ter, D)
+
+
+def test_a_malformed_file_degrades_to_no_benchmarks_rather_than_a_traceback(
+    tmp_path, caplog
+) -> None:
+    """`create_app` must not die because the benchmark file has a typo in it.
+
+    The CLI path was fixed in M3's fix wave -- it names the error and exits 2 --
+    but the API path still let `BenchmarkConfigError` escape `create_app` as a
+    startup traceback, so a mistake in one optional config file took down the
+    ledger, the valuation and the positions table with it.
+
+    Refusing to start would be the wrong repair. M3 section 4.4 already settled
+    the principle for the fetch path: a wrong benchmark must not cost the
+    instrument phase its five-year backfill. The same reasoning applies here, and
+    an absent benchmark set is a state the app already supports -- the comparison
+    simply does not render.
+
+    Degrading is not swallowing: the warning names the file and the reason, so
+    the operator who wonders where their benchmark went has somewhere to look.
+    """
+    import logging
+
+    from app.main import load_benchmarks_or_warn
+
+    bad = tmp_path / "benchmarks.yaml"
+    bad.write_text("world:\n  symbol: AAA.XX\n", encoding="utf-8")  # no currency/name/ter
+
+    with caplog.at_level(logging.WARNING):
+        assert load_benchmarks_or_warn(bad) == ()
+
+    assert "benchmarks.yaml" in caplog.text

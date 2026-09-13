@@ -78,7 +78,7 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
     linked_instrument_return: "0.05",
     linked_benchmark_return: "0.03",
     linked_excess: "0.02",
-    coverage: "full",
+    span: "full",
     ...overrides,
   };
 }
@@ -264,7 +264,7 @@ describe("a window wider than the instrument's life", () => {
 describe("coverage", () => {
   it("shows the benchmark's own span coverage separately from the instrument's own coverage", async () => {
     serve([instrument()], [benchmark()], {
-      XX0000000001: chart({ coverage: "full", comparison: comparison({ coverage: "partial" }) }),
+      XX0000000001: chart({ coverage: "full", comparison: comparison({ span: "partial" }) }),
     });
     render(<Instrument />);
 

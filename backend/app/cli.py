@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from app.analytics.rebuild import ChargeMismatch, rebuild
 from app.db import create_engine_and_tables
 from app.domain.lots import LOT_METHODS
+from app.ingest.benchmark_prices import fetch_benchmarks
 from app.ingest.benchmarks import BenchmarkConfigError, load_benchmarks
 from app.ingest.corporate_actions import CorporateAction
 from app.ingest.degiro.account_csv import parse_account_csv
@@ -25,7 +26,7 @@ from app.ingest.importer import (
     import_degiro_export,
     undo_batch,
 )
-from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_benchmarks, fetch_prices
+from app.ingest.prices import UnresolvedSymbols, build_providers, fetch_prices
 from app.ingest.reconcile import reconcile
 from app.ingest.symbols import (
     MANUAL_ANSWER,
@@ -335,11 +336,15 @@ def fetch_prices_command(
     settings = get_settings()
     answers_path = Path(settings.instrument_symbols_path)
     engine = create_engine_and_tables(settings.database_url)
-
     try:
+        # Built ONCE, and INSIDE the try. Calling it twice opened a second
+        # httpx.Client that nothing ever closed, and re-parsed the manual-prices
+        # CSV, on every real run -- but it is also what reads that CSV, so
+        # hoisting it above the handler turns a named error into a traceback.
+        providers = build_providers(settings)
         result = fetch_prices(
             engine,
-            build_providers(settings),
+            providers,
             answers=load_symbol_answers(answers_path),
             now=datetime.now(tz=UTC),
             full=full,
@@ -392,9 +397,7 @@ def fetch_prices_command(
         typer.echo(str(malformed), err=True)
         raise typer.Exit(code=2) from malformed
 
-    bench_report = fetch_benchmarks(
-        engine, build_providers(settings).prices, benchmarks, full=full, today=date.today()
-    )
+    bench_report = fetch_benchmarks(engine, providers.prices, benchmarks, full=full)
     if benchmarks:
         typer.echo(
             f"Benchmarks: {len(bench_report.fetched)} fetched, "

@@ -29,6 +29,15 @@ export type LotMethodTag = "FIFO" | "LIFO" | "HIFO";
  *  never a silent omission from an aggregate. */
 export type Coverage = "missing" | "partial" | "manual" | "full";
 
+/** How much of a requested SPAN a series reaches across -- a different question
+ *  from `Coverage`'s staleness, and deliberately a different type. Mirrors
+ *  `SpanCoverage` in backend/app/models/types.py.
+ *
+ *  `manual` is absent rather than unused: it is a claim about where a price came
+ *  from, and a span has no such claim to make. While the span borrowed
+ *  `Coverage`, the badge below had a `MANUAL` arm that could never fire. */
+export type SpanCoverage = "missing" | "partial" | "full";
+
 /** Provenance, carried by every response envelope. The backend cannot construct
  *  one without these two fields, so they are always present rather than optional
  *  here -- see `Provenance` in backend/app/api/schemas.py. */
@@ -200,13 +209,21 @@ export interface IntervalExcess {
   end: string;
   instrument_return: string | null;
   benchmark_return: string | null;
+  /** The ARITHMETIC difference, `instrument_return - benchmark_return`, not the
+   *  geometric `(1 + i) / (1 + b) - 1`. Written down because the two answers
+   *  diverge as returns grow and a reader comparing this against a figure from
+   *  anywhere else has no other way to know which one they are holding.
+   *
+   *  `null`, never `0`, when either side could not be measured over the whole
+   *  interval: a zero excess claims the instrument matched the benchmark
+   *  exactly, which is not what "we could not tell" means. */
   excess: string | null;
   reason: string | null;
 }
 
 /** The instrument against one benchmark, both as total-return indices. Mirrors
- *  `ComparisonOut`. `coverage` is the BENCHMARK's span coverage, not the
- *  instrument's own. */
+ *  `ComparisonOut`. `span` is the BENCHMARK's span, not the instrument's
+ *  staleness -- a different judgement, so a different type. */
 export interface Comparison {
   basis: string;
   benchmark_key: string;
@@ -215,8 +232,12 @@ export interface Comparison {
   intervals: IntervalExcess[];
   linked_instrument_return: string | null;
   linked_benchmark_return: string | null;
+  /** The arithmetic difference of the two CHAIN-LINKED returns, matching
+   *  `IntervalExcess.excess`. It has to match: a geometric per-interval excess
+   *  does not chain into an arithmetic summary, so mixing the two would make
+   *  this figure disagree with the rows it summarises. */
   linked_excess: string | null;
-  coverage: Coverage;
+  span: SpanCoverage;
 }
 
 /** One instrument's priced line, with an optional benchmark comparison.

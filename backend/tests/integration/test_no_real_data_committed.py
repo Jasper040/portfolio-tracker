@@ -11,8 +11,10 @@ So the check runs the other way round: read the gitignored export, work out what
 makes the rule enforceable rather than merely stated, and it cannot go stale --
 re-import a different export and the test re-derives what to look for.
 
-Opt-in, because it needs the export to know what to look for. Absent it, there is
-nothing to check and the suite skips.
+The scan is opt-in, because it needs the export to know what to look for. Absent
+it, there is nothing to check and the scan skips. The tests of its matching rules
+are not: they run on invented input, in every suite, because a rule exercised only
+against the real repo is a rule whose blind spots stay invisible (PT-30).
 
 Three kinds of thing are searched for, each for its own reason:
 
@@ -39,13 +41,10 @@ import pytest
 REPO = Path(__file__).parents[3]
 EXPORT = REPO / "degiro-export"
 
-pytestmark = [
-    pytest.mark.realdata,
-    pytest.mark.skipif(
-        not (EXPORT / "Transactions.csv").exists(),
-        reason="real DeGiro export not present; nothing to check against",
-    ),
-]
+_needs_export = pytest.mark.skipif(
+    not (EXPORT / "Transactions.csv").exists(),
+    reason="real DeGiro export not present; nothing to check against",
+)
 
 #: Where the instrument name lives in each file. Only this column is scanned for
 #: names: `Account.csv`'s description column is transaction vocabulary -- `Koop`,
@@ -70,6 +69,11 @@ _NOT_A_HOLDING = {
     # matched as a phrase below and the ISIN is matched exactly -- an instrument
     # cannot hide behind a word its own name shares with a CSS property.
     "meta", "product", "accumulating",
+    # Three characters, searched for since PT-30 lowered the floor. Each is a
+    # word the code uses for its own reasons -- a quantifier, an HTML element, a
+    # round number -- and appears in dozens of tracked files without picking out
+    # a holding. A ticker never belongs here: a ticker in a tracked file is a leak.
+    "all", "div", "500",
 }
 
 
@@ -87,6 +91,30 @@ def _significant_digits(value: Decimal) -> int:
     carried to the cent is five or more and belongs to the owner.
     """
     return len(f"{value:f}".replace("-", "").replace(".", "").strip("0"))
+
+
+#: The shortest name token searched for. A ticker is often three characters, and a
+#: floor of four let a ticker-shaped holding through unsearched (PT-30). A length
+#: floor drops every short word, holdings included; `_NOT_A_HOLDING` drops only
+#: the ones that identify nothing, which is the job it already does for long words.
+#: Two stays below the floor: at that length nearly every token is a legal suffix
+#: or a preposition, and the whole name is still matched as a phrase.
+_MIN_TOKEN = 3
+
+
+def _name_tokens(name: str) -> set[str]:
+    """What one product name contributes to the search.
+
+    The whole name, so a holding cannot hide behind a stoplisted word, plus each
+    distinctive token, so it cannot hide behind an abbreviation either.
+    """
+    if len(name) < _MIN_TOKEN:
+        return set()
+    return {name} | {
+        token
+        for token in re.split(r"[\s,./\"()&+-]+", name)
+        if len(token) >= _MIN_TOKEN and token.lower() not in _NOT_A_HOLDING
+    }
 
 
 def _real_values() -> tuple[set[str], set[str], set[str]]:
@@ -115,14 +143,8 @@ def _real_values() -> tuple[set[str], set[str], set[str]]:
                             plain = f"{abs(number):f}".rstrip("0").rstrip(".")
                             amounts.add(plain)
                             amounts.add(plain.replace(".", ","))
-                    elif index == product_column and line_no > 0 and len(text) >= 4:
-                        # The whole name, so a holding cannot hide behind a
-                        # stoplisted word, plus each distinctive token, so it
-                        # cannot hide behind an abbreviation either.
-                        tokens.add(text)
-                        for token in re.split(r"[\s,./\"()&+-]+", text):
-                            if len(token) >= 4 and token.lower() not in _NOT_A_HOLDING:
-                                tokens.add(token)
+                    elif index == product_column and line_no > 0:
+                        tokens.update(_name_tokens(text))
 
     return isins, tokens, amounts
 
@@ -205,6 +227,18 @@ def test_an_isin_is_a_leak_whatever_case_it_is_written_in() -> None:
     assert leaks == ["config/benchmarks.yaml: ISIN NL0000000001"]
 
 
+def test_a_three_character_holding_token_is_searched_for() -> None:
+    """Tickers are three characters, and a floor of four never searched for one.
+
+    The floor sat exactly above a ticker-shaped token, so a tracked file carried
+    one while this scan stayed green (PT-30). The name is invented.
+    """
+    assert "QZX" in _name_tokens("QZX Velmora")
+    assert _name_tokens("QZX") == {"QZX"}
+
+
+@pytest.mark.realdata
+@_needs_export
 def test_no_tracked_file_contains_a_real_holding() -> None:
     isins, tokens, amounts = _real_values()
     assert isins, "read no ISINs from the export; the scan would pass vacuously"

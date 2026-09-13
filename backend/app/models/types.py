@@ -26,12 +26,30 @@ from typing import Any, Literal
 
 from sqlalchemy import Dialect, String, TypeDecorator
 
-#: How much of the requested data an answer could actually account for (design
-#: doc Sec 8.1). Defined here rather than in `api/schemas.py` so `analytics/`
-#: can enforce the invariant without importing from the API layer -- nothing
-#: under analytics/, domain/, ingest/ or providers/ depends on app.api, and
-#: this type is not a reason to start.
+#: How STALE the prices behind an answer are (design doc Sec 8.1). Defined here
+#: rather than in `api/schemas.py` so `analytics/` can enforce the invariant
+#: without importing from the API layer -- nothing under analytics/, domain/,
+#: ingest/ or providers/ depends on app.api, and this type is not a reason to
+#: start.
 Coverage = Literal["missing", "partial", "manual", "full"]
+
+#: How much of a requested SPAN a series actually reaches across. A different
+#: judgement from `Coverage`, and deliberately a different type.
+#:
+#: The chart endpoint returns one of each, side by side. While both were called
+#: `coverage` and typed `Coverage`, the obvious line to write --
+#: `worst_coverage([chart.coverage, comparison.coverage])` -- ranked a
+#: benchmark's span shortfall against a price's staleness and produced a number
+#: that means nothing, with nothing in the type system to object. Two names
+#: would have made that unlikely; two types make it impossible, which is how
+#: this codebase already handles the two close columns (Sec 7.5).
+#:
+#: `manual` is absent rather than unused. It is a claim about where a price came
+#: from, and a span has no such claim to make: span is measured from
+#: `TotalReturnPoint`s, which carry no `source`, so `classify()` is never
+#: reached. Leaving it in the vocabulary let the screen render a
+#: `BENCHMARK SPAN - MANUAL` badge that could never legitimately fire.
+SpanCoverage = Literal["missing", "partial", "full"]
 
 
 class DecimalString(TypeDecorator[Decimal]):

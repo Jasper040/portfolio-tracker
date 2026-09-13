@@ -458,7 +458,7 @@ class TestMoneyOnTheWire:
 class TestExcessReason:
     def test_a_reason_reaches_the_wire_when_excess_is_null(self) -> None:
         """The instrument's own span shortfall never becomes a coverage badge
-        (by design -- see `Comparison.coverage`'s docstring). It surfaces only
+        (by design -- see `Comparison.span`'s docstring). It surfaces only
         in `reason`, and Task 5's implementer flagged this specifically: if the
         API drops the field, that "this figure is meaningless" case becomes
         invisible to the reader again.

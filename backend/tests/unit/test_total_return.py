@@ -1,9 +1,12 @@
-"""The total-return series: the only reader of `close_adjusted`.
+"""One instrument's adjusted closes: the dangerous half of the adjusted lane.
 
-Not wired to an endpoint yet -- M3's instrument chart is what will consume it.
-It exists now because parent doc Sec 7.5's guarantee is that no call path reaches
-both closes, and a test asserting that valuation cannot reach a module that does
-not exist would pass for the wrong reason.
+M3's instrument chart consumes this. It is the reader that must stay away from any
+path holding a cash balance, because `close_adjusted` already contains every
+dividend and cash contains them again -- parent doc Sec 7.5.
+
+The benchmark reader moved to `test_benchmark_return.py` in M6a, with the module
+it covers. See that file, and `analytics/benchmark_return.py`, for why the two are
+not equally dangerous and therefore should not have shared a module.
 """
 
 from __future__ import annotations
@@ -15,12 +18,9 @@ from uuid import uuid4
 import pytest
 from sqlmodel import Session
 
-from app.analytics.total_return import (
-    benchmark_total_return_series,
-    total_return_series,
-)
+from app.analytics.total_return import total_return_series
 from app.db import create_engine_and_tables
-from app.models.market import BenchmarkDaily, PriceDaily
+from app.models.market import PriceDaily
 
 D = Decimal
 FETCHED = datetime(2026, 9, 6, 12, 0, 0)
@@ -80,54 +80,4 @@ def test_the_window_is_inclusive_and_excludes_nothing_else(engine) -> None:
 def test_an_instrument_with_no_prices_yields_an_empty_series(engine) -> None:
     assert total_return_series(
         engine, "NL0000000009", start=date(2025, 3, 3), end=date(2025, 3, 5)
-    ) == ()
-
-
-@pytest.fixture(name="benchmark_engine")
-def _benchmark_engine():
-    """A benchmark proxy quoted in USD, with the two closes deliberately
-    different so a reader that took the wrong column would produce a wrong
-    number rather than the same one."""
-    engine = create_engine_and_tables("sqlite://")
-    with Session(engine) as session:
-        for day, plain, adjusted in (
-            (date(2025, 3, 3), "40.00", "20.00"),
-            (date(2025, 3, 4), "40.00", "22.00"),
-            (date(2025, 3, 5), "40.00", "24.00"),
-        ):
-            session.add(
-                BenchmarkDaily(
-                    id=uuid4(),
-                    key="world",
-                    price_date=day,
-                    close_unadjusted=D(plain),
-                    close_adjusted=D(adjusted),
-                    currency="USD",
-                    source="yahoo",
-                    fetched_at=FETCHED,
-                )
-            )
-        session.commit()
-    return engine
-
-def test_the_benchmark_reader_reads_the_adjusted_close(benchmark_engine) -> None:
-    """Same shape as the instrument reader, same column. The fixture's plain
-    close is flat and its adjusted close rises, so a reader taking the wrong
-    column would report a benchmark that went nowhere."""
-    points = benchmark_total_return_series(
-        benchmark_engine, "world", start=date(2025, 3, 3), end=date(2025, 3, 5)
-    )
-    assert [p.close_adjusted for p in points] == [D("20.00"), D("22.00"), D("24.00")]
-
-def test_the_benchmark_carries_its_own_quoted_currency(benchmark_engine) -> None:
-    """A benchmark quoted abroad is the case M3-7 exists for: the caller has to
-    convert before it rebases, and it cannot do that without this field."""
-    points = benchmark_total_return_series(
-        benchmark_engine, "world", start=date(2025, 3, 3), end=date(2025, 3, 5)
-    )
-    assert {p.currency for p in points} == {"USD"}
-
-def test_a_benchmark_with_no_rows_yields_an_empty_series(benchmark_engine) -> None:
-    assert benchmark_total_return_series(
-        benchmark_engine, "nowhere", start=date(2025, 3, 3), end=date(2025, 3, 5)
     ) == ()
