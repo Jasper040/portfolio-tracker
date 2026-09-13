@@ -32,7 +32,11 @@ the owner gained or lost that day.
    weekdays and `cash_daily` applies every row dated on or before a day, so a
    Saturday deposit is in Monday's `V`. `F(d)` is every flow dated after the
    previous close and on or before `d`. By exact date, the deposit would be
-   missed and reported as Monday's gain.
+   missed and reported as Monday's gain. "Dated" means the value date, the day
+   `cash_daily` applies the same money (`domain.positions.cash_effective_date`):
+   the cash book books an iDEAL deposit a day after the broker made it
+   spendable, and a buy it paid for in between must not face a close whose cash
+   excludes it.
 5. **A link needs capital.** Before the first close with `V > 0` there is nothing
    to measure (M6a section 3.4), so leading closes at or below zero are trimmed.
    The same fact inside the window -- an account emptied and refilled -- leaves

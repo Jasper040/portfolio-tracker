@@ -8,10 +8,11 @@ Two series come out of one pass because they come from one pass of the same rows
 and separating them would mean reading the ledger twice to answer one question.
 
 The rule for both is **"on or before"**: the state on day D reflects every row
-dated D or earlier. That is what makes a Saturday transaction land on Monday
-rather than disappear, and it is the same rule the valuation join uses for prices
--- so carry-forward is not separate machinery anywhere in M2, it is what "latest
-on or before" means.
+dated D or earlier. A row is dated by its `trade_date`, except that a deposit or
+withdrawal moves cash on its value date -- see `cash_effective_date`. That is
+what makes a Saturday transaction land on Monday rather than disappear, and it
+is the same rule the valuation join uses for prices -- so carry-forward is not
+separate machinery anywhere in M2, it is what "latest on or before" means.
 
 Share counts are post-split. `apply_splits` restates the fills that predate a
 split rather than inserting an event on the split date, so the count is in
@@ -39,16 +40,18 @@ _ZERO = Decimal("0.00")
 _SATURDAY = 5
 
 class LedgerCashRow(LedgerRow, Protocol):
-    """`LedgerRow` plus the one field the cash series needs.
+    """`LedgerRow` plus the two fields the cash series needs.
 
     Extending the Protocol rather than restating it: the share side of this
     module hands its rows straight to `to_lot_transactions`, so the two views of
     a row must not be allowed to drift apart. `_moves_euros` below needs no
     field beyond `net_base` -- `txn_type` and `order_ref` are already declared
-    on `LedgerRow` itself.
+    on `LedgerRow` itself. `settle_date` is the value date
+    `cash_effective_date` reads for a deposit or withdrawal.
     """
 
     net_base: Decimal
+    settle_date: date | None
 
 #: DeGiro's own wording for a currency-conversion journal entry (`Valuta
 #: Creditering`/`Valuta Debitering`), as classified by `app.ingest.degiro.
@@ -56,6 +59,45 @@ class LedgerCashRow(LedgerRow, Protocol):
 #: takes no dependency on `ingest/`, in either direction, so a row is judged by
 #: the shape the ledger already gives it (Sec 4.1).
 _FX_CONVERT = "FX_CONVERT"
+
+#: The rows that cross the account boundary (M6a-6), as classified by
+#: `app.ingest.degiro.account_csv`. Restated as plain strings for the reason
+#: `_FX_CONVERT` is. Defined here rather than in `analytics/flows.py`, which
+#: imports it, because the cash series needs the same set and `domain/` never
+#: imports `analytics/`.
+EXTERNAL_FLOW_TYPES: frozenset[str] = frozenset({"DEPOSIT", "WITHDRAWAL"})
+
+class CashDatedRow(Protocol):
+    """The three fields that decide which day a row's money moves on."""
+
+    txn_type: str
+    trade_date: date
+    settle_date: date | None
+
+def cash_effective_date(row: CashDatedRow) -> date:
+    """The day a row's money is in the account: the value date for a deposit or
+    withdrawal, the trade date for every other row.
+
+    The cash book books an iDEAL deposit one calendar day AFTER the broker made
+    the money spendable, and records the earlier day as the row's value date,
+    which the ledger stores as `settle_date`. The reservation pair that marked
+    the money available is dropped at parse time as an internal transfer -- in
+    amount it nets to zero -- so `settle_date` is the only place that timing
+    survives. A buy placed in between is paid with that money. Dated by its
+    booking day, the deposit left that buy against a cash balance about as
+    negative as the holding it bought, value at the close shrank to a small
+    residual, and the time-weighted return divided an ordinary market move by
+    it.
+
+    So a boundary-crossing row takes effect on its value date, in `cash_daily`
+    and in the flow series alike: dating only one of them that way would read
+    the deposit as a gain. `trade_date` is the fallback when no value date was
+    recorded. Every other type keeps `trade_date`: a trade moves cash the day it
+    executes, which is what keeps value continuous across it (M6a section 3.3).
+    """
+    if row.txn_type in EXTERNAL_FLOW_TYPES:
+        return row.settle_date or row.trade_date
+    return row.trade_date
 
 def _moves_euros(row: LedgerCashRow) -> bool:
     """Whether `row.net_base` is a euro cash movement that should be counted --
@@ -227,16 +269,23 @@ def _cash_points(
     three rules that were measured and rejected before this one, and why. This
     is what makes the balance reconcile against the broker's own cash line
     rather than approximately agree with it.
+
+    Each row lands on the first weekday on or after `cash_effective_date(row)`.
+    For a deposit or withdrawal that is the value date, not the booking date:
+    the cash book books an iDEAL deposit a day after the broker made it
+    spendable, and a buy it paid for in between must never see a balance that
+    excludes it. The final balance is the same either way -- only the day each
+    flow lands moves.
     """
     ordered = sorted(
         (row for row in rows if _moves_euros(row)),
-        key=lambda row: (row.trade_date, row.source_ref),
+        key=lambda row: (cash_effective_date(row), row.source_ref),
     )
     points: list[CashPoint] = []
     balance = _ZERO
     index = 0
     for day in weekdays(start, through):
-        while index < len(ordered) and ordered[index].trade_date <= day:
+        while index < len(ordered) and cash_effective_date(ordered[index]) <= day:
             balance += ordered[index].net_base
             index += 1
         points.append(CashPoint(on=day, balance_base=balance))
@@ -245,13 +294,16 @@ def _cash_points(
 def daily_series(rows: Sequence[LedgerCashRow], *, through: date) -> DailySeries:
     """Daily share counts and cash balances, from the first ledger day to `through`.
 
+    The first ledger day is the earliest trade date OR value date: a deposit
+    spendable before the ledger's first booking still has a day to be on.
+
     `through` is a parameter and not today's date, so this function has one
     answer for one input on any day it is called.
     """
     if not rows:
         return DailySeries(positions=(), cash=())
 
-    start = min(row.trade_date for row in rows)
+    start = min(min(row.trade_date, cash_effective_date(row)) for row in rows)
     if through < start:
         return DailySeries(positions=(), cash=())
 

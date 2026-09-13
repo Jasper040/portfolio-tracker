@@ -4,11 +4,13 @@ Pure arithmetic over invented rows. Everything the chart draws that does not nee
 a price is decided here, which is why this suite is the one that gets to be
 exhaustive: the join in `analytics/valuation.py` can only be as right as this is.
 
-Four things are easy to get wrong and each has a test that fails when they are:
+Five things are easy to get wrong and each has a test that fails when they are:
 
 * a weekend transaction has to land somewhere, and the rule is "the balance on
   day D is every row dated on or before D" -- so a Saturday trade shows up on
   Monday rather than vanishing;
+* a deposit or withdrawal is dated by its value date, not its booking date, or
+  a buy the deposit paid for sees a balance without the money that paid for it;
 * a pre-split buy has to be counted in post-split shares, or the position ends
   at the wrong number on every day after the split;
 * a position that goes to zero has to STOP producing rows, because an absent row
@@ -20,7 +22,7 @@ Four things are easy to get wrong and each has a test that fails when they are:
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -49,6 +51,7 @@ class Row:
     tax_base: Decimal = ZERO
     order_ref: str | None = "ord-1"
     is_economic: bool = True
+    settle_date: date | None = None
 
 def trade(ref: str, on: date, isin: str, qty: str, value: str, *, order: str = "") -> Row:
     """A share movement. `value_base` is the euro amount the broker recorded."""
@@ -65,6 +68,19 @@ def trade(ref: str, on: date, isin: str, qty: str, value: str, *, order: str = "
 def cash_row(ref: str, on: date, amount: str) -> Row:
     """A deposit, dividend or fee: cash moved, no shares."""
     return Row(source_ref=ref, trade_date=on, net_base=D(amount), quantity=None, order_ref=None)
+
+def deposit(ref: str, booked: date, amount: str, *, value_date: date | None) -> Row:
+    """A `DEPOSIT` as the cash book records it: booked on `booked`, spendable from
+    its value date, which the ledger stores as `settle_date`."""
+    return Row(
+        source_ref=ref,
+        trade_date=booked,
+        settle_date=value_date,
+        net_base=D(amount),
+        txn_type="DEPOSIT",
+        quantity=None,
+        order_ref=None,
+    )
 
 def _is_forbidden_import(module: str) -> bool:
     """A name that would pull the ORM, or a model built on it, into `domain/`."""
@@ -330,6 +346,70 @@ class TestCash:
         )
         assert series.cash[0].on == date(2025, 1, 6)
         assert series.first_position_day == date(2025, 1, 9)
+
+class TestValueDate:
+    """A deposit or withdrawal moves cash on its value date; every other row on its
+    trade date. 2025-01-06 is a Monday."""
+
+    def test_a_deposit_is_cash_from_its_value_date(self) -> None:
+        """Spendable Monday, booked Tuesday, and Monday's buy was paid with it. A
+        Monday balance without the deposit would be an overdraft that never
+        existed, and value would collapse to the gap between fill and close."""
+        series = daily_series(
+            [
+                deposit("dep", date(2025, 1, 7), "1000.00", value_date=date(2025, 1, 6)),
+                trade("buy", date(2025, 1, 6), "NL0000000001", "10", "-990.00"),
+            ],
+            through=date(2025, 1, 7),
+        )
+        assert series.cash == (
+            CashPoint(date(2025, 1, 6), D("10.00")),
+            CashPoint(date(2025, 1, 7), D("10.00")),
+        )
+
+    def test_a_trade_keeps_its_trade_date_whatever_its_settle_date(self) -> None:
+        """The rule is for money crossing the account boundary. A trade moves cash
+        the day it executes, which is what keeps value continuous across it."""
+        buy = replace(
+            trade("buy", date(2025, 1, 6), "NL0000000001", "10", "-400.00"),
+            settle_date=date(2025, 1, 8),
+        )
+        series = daily_series(
+            [cash_row("dep", date(2025, 1, 6), "1000.00"), buy], through=date(2025, 1, 8)
+        )
+        assert [point.balance_base for point in series.cash] == [D("600.00")] * 3
+
+    def test_a_deposit_with_no_value_date_moves_cash_on_its_trade_date(self) -> None:
+        series = daily_series(
+            [
+                trade("buy", date(2025, 1, 6), "NL0000000001", "10", "-400.00"),
+                deposit("dep", date(2025, 1, 7), "1000.00", value_date=None),
+            ],
+            through=date(2025, 1, 7),
+        )
+        assert series.cash == (
+            CashPoint(date(2025, 1, 6), D("-400.00")),
+            CashPoint(date(2025, 1, 7), D("600.00")),
+        )
+
+    def test_a_value_date_before_the_first_trade_date_starts_the_series_earlier(
+        self,
+    ) -> None:
+        """Otherwise the money spendable the day before the ledger's first booking
+        would have no day to be on. Positions are untouched: nothing is held
+        before the buy."""
+        series = daily_series(
+            [
+                deposit("dep", date(2025, 1, 7), "1000.00", value_date=date(2025, 1, 6)),
+                trade("buy", date(2025, 1, 7), "NL0000000001", "10", "-400.00"),
+            ],
+            through=date(2025, 1, 7),
+        )
+        assert series.cash == (
+            CashPoint(date(2025, 1, 6), D("1000.00")),
+            CashPoint(date(2025, 1, 7), D("600.00")),
+        )
+        assert series.first_position_day == date(2025, 1, 7)
 
 class TestPurity:
     def test_the_window_end_alone_decides_where_the_series_stops(self) -> None:

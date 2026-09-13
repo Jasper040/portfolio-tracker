@@ -132,6 +132,27 @@ class TestTheSeries:
         for on, daily, relative in large:
             assert abs(daily) < relative / 2, on
 
+    def test_no_single_day_doubles_or_erases_the_portfolio(
+        self, measured: PortfolioReturn
+    ) -> None:
+        """A diversified portfolio does not double or vanish in a day, so every
+        measured link has `|r| < 1`.
+
+        The bound is fixed. It does not loosen as `V(d-1)` shrinks, which is why
+        `test_a_large_flow_does_not_read_as_a_return` alone missed a deposit dated
+        after the buy it paid for: the same near-empty close that inflated the
+        return inflated that test's bound in proportion, and a link with no flow
+        in it is not inspected there at all. A failure names link ordinals only.
+        """
+        valued = [step for step in measured.links if step.daily_return is not None]
+        assert valued, "no valued link; the bound would be vacuous"
+        implausible = [
+            ordinal
+            for ordinal, step in enumerate(measured.links, start=1)
+            if step.daily_return is not None and abs(step.daily_return) >= 1
+        ]
+        assert not implausible, f"link ordinals moving by 100% or more: {implausible}"
+
 
 class TestTheBenchmark:
     def test_every_run_is_compared_over_its_own_span(

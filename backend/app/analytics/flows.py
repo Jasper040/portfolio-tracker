@@ -13,10 +13,18 @@ is identical with and without them. The flatex transfers ARE present -- that
 parser types them by sign, because they move money to and from the owner's own
 bank, which is outside the pot `cash_daily` sums.
 
-The type names are restated as plain strings rather than imported from the
-parser, for the reason `domain/positions.py` gives about `FX_CONVERT`: a ledger
-row is judged by the shape it already has, and analytics takes no dependency on
-a broker-specific parser module.
+The type names, and the rule for which day a flow lands on, are defined once in
+`domain/positions.py` and imported from there: `cash_daily` needs both answers
+too, and a second copy here would be free to disagree with the balance it is
+subtracted from. Analytics may depend on domain; domain never on analytics.
+
+**A flow is dated by its value date** -- `settle_date`, falling back to
+`trade_date` when the ledger holds none. The cash book books an iDEAL deposit a
+calendar day after the broker made the money spendable, and a buy can use the
+money in between. Keyed and cashed on its booking day, the deposit left that buy
+against a near-empty balance, the previous close's value shrank to a residual,
+and the return divided an ordinary market move by it. The flow and its cash move
+together: dating only one of them by value date would read the deposit as a gain.
 
 `net_base` is the amount, signed as it hit the cash account. It is the column
 `cash_daily` is a running sum of, which is what makes subtracting a flow from a
@@ -38,24 +46,27 @@ from typing import Protocol
 from sqlalchemy import Engine
 from sqlmodel import Session, col, select
 
+from app.domain.positions import EXTERNAL_FLOW_TYPES as EXTERNAL_FLOW_TYPES
+from app.domain.positions import cash_effective_date
 from app.models.ledger import Transaction
-
-#: The rows that cross the account boundary. See the module docstring.
-EXTERNAL_FLOW_TYPES: frozenset[str] = frozenset({"DEPOSIT", "WITHDRAWAL"})
 
 _ZERO = Decimal("0.00")
 
 
 class LedgerFlowRow(Protocol):
-    """The three fields a flow needs off a `Transaction`."""
+    """The four fields a flow needs off a `Transaction`."""
 
     txn_type: str
     trade_date: date
+    settle_date: date | None
     net_base: Decimal
 
 
 def net_flows_by_day(rows: Iterable[LedgerFlowRow]) -> dict[date, Decimal]:
-    """Net external flow per calendar day, in date order. Pure.
+    """Net external flow per calendar day, keyed by value date, in date order. Pure.
+
+    The day is `cash_effective_date`'s -- the same day `cash_daily` applies the
+    row's cash -- so a flow is never subtracted from a link its money was not in.
 
     A day whose deposit and withdrawal cancel is present with zero rather than
     absent: the ledger recorded flows that day, and dropping the key would make
@@ -66,7 +77,8 @@ def net_flows_by_day(rows: Iterable[LedgerFlowRow]) -> dict[date, Decimal]:
     for row in rows:
         if row.txn_type not in EXTERNAL_FLOW_TYPES:
             continue
-        totals[row.trade_date] = totals.get(row.trade_date, _ZERO) + row.net_base
+        on = cash_effective_date(row)
+        totals[on] = totals.get(on, _ZERO) + row.net_base
     return dict(sorted(totals.items()))
 
 

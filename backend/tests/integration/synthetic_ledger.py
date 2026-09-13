@@ -74,20 +74,23 @@ class Ledger:
             session.commit()
         return self
 
-    def row(self, on: date, txn_type: str, amount: str) -> "Ledger":
+    def row(
+        self, on: date, txn_type: str, amount: str, *, value_date: date | None = None
+    ) -> "Ledger":
         """A cash-only row: a dividend, a fee, a flow. `amount` is signed as it
-        hit the cash account."""
+        hit the cash account. `on` is the booking date; `value_date`, when given,
+        is the broker's value date and is stored as `settle_date`."""
         return self._add(
-            txn_type=txn_type, trade_date=on, fee_base=ZERO, tax_base=ZERO,
-            net_base=D(amount),
+            txn_type=txn_type, trade_date=on, settle_date=value_date, fee_base=ZERO,
+            tax_base=ZERO, net_base=D(amount),
         )
 
-    def deposit(self, on: date, amount: str) -> "Ledger":
-        return self.row(on, "DEPOSIT", amount)
+    def deposit(self, on: date, amount: str, *, value_date: date | None = None) -> "Ledger":
+        return self.row(on, "DEPOSIT", amount, value_date=value_date)
 
-    def withdraw(self, on: date, amount: str) -> "Ledger":
+    def withdraw(self, on: date, amount: str, *, value_date: date | None = None) -> "Ledger":
         """`amount` is written positive and booked negative, as the broker does."""
-        return self.row(on, "WITHDRAWAL", str(-D(amount)))
+        return self.row(on, "WITHDRAWAL", str(-D(amount)), value_date=value_date)
 
     def buy(
         self, on: date, quantity: str, price: str, *, fee: str = "0.00", isin: str = ISIN

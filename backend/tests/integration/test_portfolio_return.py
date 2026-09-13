@@ -84,6 +84,46 @@ class TestADepositThroughTheLedger:
         assert [step.daily_return for step in _returns(engine).links] == [D("0"), D("0")]
 
 
+def _spendable_monday_booked_tuesday() -> Engine:
+    """1000.00 the broker made spendable on Monday and booked on Tuesday, and 10
+    shares bought with it at Monday's close of 20.00. Flat into Tuesday, up 10% on
+    Wednesday: 20.00 earned on the 1000.00 there at Tuesday's close, which is 0.02."""
+    return (
+        Ledger()
+        .deposit(TUE, "1000.00", value_date=MON)
+        .buy(MON, "10", "20.00")
+        .close(MON, "20.00")
+        .close(TUE, "20.00")
+        .close(WED, "22.00")
+        .rebuilt(through=WED)
+    )
+
+
+class TestADepositIsDatedByItsValueDate:
+    """The cash book books an iDEAL deposit a day after the broker made it
+    spendable, and a buy can use the money in between. A trade must never see a
+    cash balance that excludes the money funding it, so `cash_daily` and the flow
+    series both place the deposit on its value date."""
+
+    def test_the_flow_is_keyed_on_its_value_date(self) -> None:
+        """The control: the deposit is Monday's flow, inside Monday's close and in
+        no link. Keyed on Tuesday it would be subtracted from Tuesday's link while
+        its cash was already in Monday's value."""
+        assert external_flows(_spendable_monday_booked_tuesday()) == {MON: D("1000.00")}
+
+    def test_the_buy_it_funded_leaves_the_return_untouched(self) -> None:
+        """Monday's close holds the shares and the cash left over from the
+        deposit. Placed on its booking date instead, Monday holds the shares
+        against an overdraft of the same size: no capital at all here, and with a
+        price a little above the fill a tiny residual that turns an ordinary day
+        into a return of many times the portfolio."""
+        links = _returns(_spendable_monday_booked_tuesday()).links
+        assert {step.on: step.daily_return for step in links} == {
+            TUE: D("0"),
+            WED: D("0.02"),
+        }
+
+
 class TestATradeIsNotAFlow:
     def test_without_a_trade_the_holding_earns_two_percent(self) -> None:
         """The control. Without it the next test passes for an implementation

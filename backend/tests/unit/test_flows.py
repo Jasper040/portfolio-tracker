@@ -23,11 +23,28 @@ class Row:
     txn_type: str
     trade_date: date
     net_base: D
+    settle_date: date | None = None
 
 
 def test_a_deposit_is_a_positive_flow_and_a_withdrawal_a_negative_one() -> None:
     rows = [Row("DEPOSIT", MON, D("1000.00")), Row("WITHDRAWAL", WED, D("-250.00"))]
     assert net_flows_by_day(rows) == {MON: D("1000.00"), WED: D("-250.00")}
+
+
+def test_a_flow_is_keyed_by_its_value_date() -> None:
+    """Money the broker made spendable on Monday and booked on Tuesday is Monday's
+    flow. `cash_daily` holds it from Monday, and a flow keyed a day after its cash
+    would be subtracted from a link the money was already in."""
+    rows = [
+        Row("DEPOSIT", TUE, D("1000.00"), settle_date=MON),
+        Row("WITHDRAWAL", WED, D("-250.00"), settle_date=TUE),
+    ]
+    assert net_flows_by_day(rows) == {MON: D("1000.00"), TUE: D("-250.00")}
+
+
+def test_a_flow_with_no_value_date_falls_back_to_its_trade_date() -> None:
+    rows = [Row("DEPOSIT", TUE, D("1000.00"), settle_date=None)]
+    assert net_flows_by_day(rows) == {TUE: D("1000.00")}
 
 
 def test_nothing_else_that_moves_cash_is_a_flow() -> None:
