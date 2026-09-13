@@ -1,5 +1,10 @@
 """M6a's acceptance, against the owner's own export and price cache.
 
+PYTEST_DONT_REWRITE -- without this marker pytest's assertion rewriting would
+print both operands on any failure here, which means real flow totals, run
+returns, dates and `Transaction`/`ReturnLink`/`RunExcess` reprs; every assert
+below relies on its own message (or none) instead.
+
 States no figure of its own. The flow oracle reads `Account.csv` directly; every
 other assertion is a property the return series must have whatever the figures
 are. The flow checks need only the export; the series checks read the

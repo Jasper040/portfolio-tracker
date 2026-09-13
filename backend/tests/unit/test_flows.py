@@ -18,7 +18,7 @@ TUE = date(2025, 3, 4)
 WED = date(2025, 3, 5)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Row:
     txn_type: str
     trade_date: date
