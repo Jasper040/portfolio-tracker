@@ -221,6 +221,7 @@ rows stay economic.
 | `python -m app.cli batches` | List import batches, newest first. This is how to find a batch id after the terminal has scrolled. |
 | `python -m app.cli undo <batch-id>` | Remove every transaction from one batch. The ledger's only reversal mechanism. |
 | `python -m app.cli fetch-prices` | Fill the price, FX and benchmark caches. Three phases in order: instrument prices, then FX for every currency they arrived in, then benchmarks. Refuses everything, having written nothing, while any instrument symbol is unanswered — a partial cache reports `partial` as though a provider were at fault rather than a question being unanswered. Exits 1 on that refusal, 2 when a provider is unreachable or a hand-edited config file cannot be parsed. `--full` refetches the whole five-year history instead of only what is missing. |
+| `python -m app.cli rebuild` | Recompute `position_daily` and `cash_daily`, and the lot and closure tables, from the ledger (design doc Sec 11.2). Writes only derived tables — the ledger and the price cache are both untouched — so it is safe to re-run at any time. `--method` overrides the configured lot method; `--through` sets the last day of the daily series, defaulting to today. Exits non-zero, having written nothing, if attributed charges do not equal the ledger's. |
 | `python -m app.cli reconcile <export-dir>` | Check the cross-file invariants between `Transactions.csv`, `Account.csv` and `Portfolio.csv` (design doc Sec 3.6). Exits non-zero on any failure. `Portfolio.csv` is optional; without it the cash invariant is skipped. |
 
 To try the app without touching real data, point it at the synthetic golden files —
@@ -263,8 +264,8 @@ the real export under `pytest -m realdata`.
 
 ```powershell
 cd backend
-python -m pytest                 # 717 tests. Excludes the realdata suite by default.
-python -m pytest -m realdata     # Opt-in: 65 tests against the gitignored real exports.
+python -m pytest                 # 726 tests. Excludes the realdata suite by default.
+python -m pytest -m realdata     # Opt-in: 66 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
 python -m mypy app               # Strict type check.
@@ -273,15 +274,15 @@ python -m mypy app               # Strict type check.
 `pytest` excludes `realdata` via `addopts` in `pyproject.toml`, so a plain run
 never depends on whether the owner's gitignored exports happen to be on disk.
 
-> **A green `-m realdata` run is not the same as a complete one.** Nineteen of the
-> sixty-five skip when the price cache is empty, and they all carry the same reason:
+> **A green `-m realdata` run is not the same as a complete one.** Twenty of the
+> sixty-six skip when the price cache is empty, and they all carry the same reason:
 > `price cache is empty; run fetch-prices first`. Five of those are the instrument
-> chart's own acceptance tests and five are the portfolio-performance acceptance
+> chart's own acceptance tests and six are the portfolio-performance acceptance
 > tests, so a reader who sees `46 passed` and stops reading will believe M3 or M6a
 > was verified against the real export when it was not. Skips are the right
 > behaviour — a missing cache is not a defect — but the count that matters is the
 > skip count, not the colour. Import, then `fetch-prices`, then re-run:
-> sixty-five passed and nothing skipped is the acceptance run.
+> sixty-six passed and nothing skipped is the acceptance run.
 
 The `realdata` suite states no figure of its own. `tests/integration/realdata_subject.py`
 reads the export at run time and works out what to assert — which instrument
@@ -397,6 +398,8 @@ then the two coexist rather than one half-replacing the other.
 one benchmark, with both sides' dividend treatment stated beside the figure. It is a
 different screen from **Benchmarks & Industry**, which stays `MODELLED` — contribution
 to return and industry weight over time are M6b's, and the two coexist until then.
+M6a changes how `cash_daily` is derived, so run `python -m app.cli rebuild` after
+pulling, or the return is computed from a stale cash series.
 
 > **Never name a source directory `data/`.** `.gitignore` has a bare `data/` rule
 > guarding real broker exports, and it matches at any depth — a
