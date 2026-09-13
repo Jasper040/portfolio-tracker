@@ -5,6 +5,7 @@ import type {
   InstrumentSummary,
   LotMethodTag,
   LotPage,
+  PerformanceReport,
   PositionsPage,
   TransactionPage,
   ValuationSeries,
@@ -145,4 +146,25 @@ export async function fetchInstruments(): Promise<InstrumentSummary[]> {
   }
   const body = (await response.json()) as { items: InstrumentSummary[] };
   return body.items;
+}
+
+export interface PerformanceQuery {
+  /** ISO date, or `null` to send none -- the server then measures from the
+   *  ledger's first day. The same contract as `ValuationQuery.from`. */
+  from: string | null;
+  /** `null` omits the parameter: no comparison, not a comparison against "". */
+  benchmark: string | null;
+}
+
+export async function fetchPerformance(query: PerformanceQuery): Promise<PerformanceReport> {
+  const params = new URLSearchParams();
+  if (query.from) params.set("from", query.from);
+  if (query.benchmark) params.set("benchmark", query.benchmark);
+  const suffix = params.toString() ? `?${params}` : "";
+
+  const response = await fetch(`${BASE}/api/performance${suffix}`);
+  if (!response.ok) {
+    throw new Error(`Failed to load performance: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as PerformanceReport;
 }
