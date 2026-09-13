@@ -33,6 +33,7 @@ from app.models.ledger import (
     Transaction,
 )
 from app.models.market import FxDaily, PriceDaily
+from tests.integration.synthetic_ledger import Ledger
 
 GOLDEN = Path(__file__).parents[1] / "golden"
 
@@ -547,6 +548,23 @@ class TestDailySeries:
             assert max(row.cash_date for row in session.exec(select(CashDaily)).all()) == (
                 _last_weekday_on_or_before(last_trade)
             )
+
+    def test_the_default_window_reaches_a_value_date_after_the_last_booking(self) -> None:
+        """A deposit booked on Monday but value-dated Wednesday, after every
+        booking in the ledger. It moves cash on its value date, so a default
+        window ending at the last trade date would stop on Monday and leave the
+        deposit out of `cash_daily` without a word. Every amount is invented."""
+        monday, wednesday = date(2025, 3, 3), date(2025, 3, 5)
+        engine = (
+            Ledger()
+            .deposit(monday, "1000.00", value_date=wednesday)
+            .buy(monday, "10", "20.00")
+            .engine
+        )
+        rebuild(engine, "FIFO")
+        with Session(engine) as session:
+            final = max(session.exec(select(CashDaily)).all(), key=lambda row: row.cash_date)
+        assert (final.cash_date, final.balance_base) == (wednesday, D("800.00"))
 
     def test_through_carries_the_series_past_the_last_trade(self, loaded: Engine) -> None:
         """What the CLI passes. A position held for three months since the last

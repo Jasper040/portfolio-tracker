@@ -119,18 +119,21 @@ class TestTheSeries:
         closes = {
             point.on: point.value_base for point in value_series(local, start=date.min).points
         }
-        large: list[tuple[date, Decimal, Decimal]] = []
-        for step in measured.links:
+        large: list[tuple[int, Decimal, Decimal]] = []
+        for ordinal, step in enumerate(measured.links, start=1):
             before = closes.get(step.since)
             if step.daily_return is None or before is None or before <= 0 or step.flow_base == 0:
                 continue
             relative = abs(step.flow_base) / before
             if relative >= D("0.5"):
-                large.append((step.on, step.daily_return, relative))
+                large.append((ordinal, step.daily_return, relative))
         if not large:
             pytest.skip("no flow in the ledger is at least half the portfolio it landed in")
-        for on, daily, relative in large:
-            assert abs(daily) < relative / 2, on
+        for ordinal, daily, relative in large:
+            # Compared outside the assert: pytest's rewriting would otherwise print
+            # both operands, a real return and a real flow ratio, on failure.
+            within_bound = abs(daily) < relative / 2
+            assert within_bound, f"link #{ordinal}"
 
     def test_no_single_day_doubles_or_erases_the_portfolio(
         self, measured: PortfolioReturn
