@@ -50,7 +50,7 @@ from collections.abc import Sequence
 from datetime import date, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
@@ -58,6 +58,7 @@ from app.analytics.instrument_price import instrument_price_view
 from app.analytics.instrument_return import HoldingInterval
 from app.analytics.instrument_return import comparison as compute_comparison
 from app.analytics.quotes import MISSING, worst_coverage
+from app.api.dependencies import get_benchmarks
 from app.api.routes_transactions import get_engine
 from app.api.schemas import (
     BenchmarkListOut,
@@ -85,14 +86,6 @@ ChartRange = Literal["1Y", "3Y", "5Y", "max"]
 #: Calendar days to look back for each fixed range. `max` is handled
 #: separately -- see `_window`.
 _RANGE_DAYS: dict[str, int] = {"1Y": 365, "3Y": 365 * 3, "5Y": 365 * 5}
-
-
-def get_benchmarks(request: Request) -> tuple[Benchmark, ...]:
-    """Wired onto `app.state` at construction time -- the same seam as
-    `get_engine`, and for the same reason: production wiring keeps a seam
-    tests can use instead of FastAPI's `dependency_overrides`."""
-    benchmarks: tuple[Benchmark, ...] = request.app.state.benchmarks
-    return benchmarks
 
 
 def _earliest_trade_date(engine: Engine, isin: str) -> date | None:

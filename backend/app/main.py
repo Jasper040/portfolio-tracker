@@ -11,6 +11,7 @@ from sqlalchemy import Engine
 from app.api import (
     routes_instrument,
     routes_lots,
+    routes_performance,
     routes_positions,
     routes_transactions,
     routes_valuation,
@@ -92,4 +93,5 @@ def create_app(
     app.include_router(routes_valuation.router)
     app.include_router(routes_positions.router)
     app.include_router(routes_instrument.router)
+    app.include_router(routes_performance.router)
     return app

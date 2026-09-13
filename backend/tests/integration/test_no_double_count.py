@@ -222,6 +222,10 @@ def test_the_read_side_modules_exist_so_this_is_not_vacuous() -> None:
     assert any(path.name == "total_return.py" for path in modules)
     assert any(path.name == "instrument_price.py" for path in modules)
     assert any(path.name == "instrument_return.py" for path in modules)
+    assert any(path.name == "indexing.py" for path in modules)
+    assert any(path.name == "flows.py" for path in modules)
+    assert any(path.name == "portfolio_return.py" for path in modules)
+    assert any(path.name == "portfolio_benchmark.py" for path in modules)
 
 def test_the_exempt_set_names_files_that_actually_exist() -> None:
     """An exemption for a deleted file is a hole nobody would notice: it would
@@ -307,6 +311,7 @@ def test_the_route_modules_are_discovered_so_this_is_not_vacuous() -> None:
     assert modules
     assert "app.api.routes_valuation" in modules
     assert "app.api.routes_positions" in modules
+    assert "app.api.routes_performance" in modules
 
 
 def test_the_exempt_routes_name_endpoints_that_actually_exist() -> None:
@@ -441,3 +446,30 @@ def test_the_portfolio_comparison_reaches_a_benchmark_and_no_holding() -> None:
     assert "app.analytics.total_return" not in reachable
     assert "app.analytics.prices" not in reachable
     assert "app.analytics.valuation" not in reachable
+
+
+def test_the_performance_route_reaches_a_benchmark_but_no_holdings_adjusted_close() -> None:
+    """M6a section 6. The first endpoint to need both lanes in one response: it
+    reaches valuation and the benchmark reader, cannot reach the total-return
+    module, and -- like the instrument route -- names neither column itself.
+
+    It is NOT in `EXEMPT_ROUTES`. The discovered route list covered it the moment
+    the file existed, and the general call-path test above already holds it to
+    the rule; this test says why it passes."""
+    route = "app.api.routes_performance"
+    assert route not in EXEMPT_ROUTES
+    reachable = _reachable_from(route)
+    assert "app.analytics.valuation" in reachable
+    assert "app.analytics.benchmark_return" in reachable
+    assert "app.analytics.total_return" not in reachable
+    names = _identifiers(APP / "api" / "routes_performance.py")
+    assert UNADJUSTED not in names
+    assert ADJUSTED not in names
+
+
+def test_the_shared_route_dependencies_reach_no_analytics_module() -> None:
+    """`get_benchmarks` moved here so a route can have it without importing
+    `routes_instrument.py`, which reaches `total_return.py`. A shared dependency
+    module that imported analytics would reopen that path for every route."""
+    reachable = _reachable_from("app.api.dependencies")
+    assert not {module for module in reachable if module.startswith("app.analytics.")}
