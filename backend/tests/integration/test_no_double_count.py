@@ -404,3 +404,27 @@ def test_the_shared_index_arithmetic_reaches_no_reader() -> None:
         "app.analytics.valuation",
     ):
         assert reader not in reachable, reader
+
+
+def test_the_portfolio_return_module_cannot_reach_an_adjusted_close_reader() -> None:
+    """M6a-2. `portfolio_return.py` values the portfolio on the unadjusted close
+    plus cash, and cash already carries every dividend, so reaching an adjusted
+    reader would put Sec 7.5's double count one import away. The benchmark reader
+    is excluded too: the comparison is composed in the route, so M6b can consume
+    this module without acquiring a benchmark."""
+    assert (APP / "analytics" / "portfolio_return.py").is_file()
+    reachable = _reachable_from("app.analytics.portfolio_return")
+    assert "app.analytics.valuation" in reachable
+    assert "app.analytics.total_return" not in reachable
+    assert "app.analytics.benchmark_return" not in reachable
+
+
+def test_the_flow_reader_reaches_no_other_analytics_module() -> None:
+    """`flows.py` reads the ledger and nothing else: no price, no close, no FX."""
+    assert (APP / "analytics" / "flows.py").is_file()
+    others = {
+        module
+        for module in _reachable_from("app.analytics.flows")
+        if module.startswith("app.analytics.") and not module.startswith("app.analytics.flows")
+    }
+    assert not others, others
