@@ -22,8 +22,8 @@
  *  SPAN across the holding, a different measurement with the same vocabulary
  *  (`backend/app/analytics/instrument_return.py`'s `Comparison.coverage`
  *  docstring spells out why). Rendering it through `MethodBadge` would make it
- *  look like the same kind of coverage; `BenchmarkSpanBadge` below exists so it
- *  cannot be mistaken for one.
+ *  look like the same kind of coverage; `BenchmarkSpanBadge`, in
+ *  `components/ui/BenchmarkControls.tsx`, exists so it cannot be mistaken for one.
  *
  *  Every excess figure carries `comparison.basis` next to it -- the API sends
  *  `"total_return"`, and showing a return with no basis label is exactly what
@@ -62,19 +62,19 @@ import { fetchBenchmarks, fetchInstrumentChart, fetchInstruments, type Range } f
 import type {
   Benchmark,
   Comparison,
-  SpanCoverage,
   Interval,
   InstrumentChart,
   InstrumentSummary,
   IntervalExcess,
 } from "../api/types";
 import { EChart } from "../components/charts/EChart";
+import { BenchmarkSelector, BenchmarkSpanBadge, terLabel } from "../components/ui/BenchmarkControls";
 import { Pill, SegmentedControl } from "../components/ui/Controls";
 import { MethodBadge } from "../components/ui/MethodBadge";
 import { Notice } from "../components/ui/Notice";
 import { Panel } from "../components/ui/Panel";
 import { HeadRow, Table, TableFrame, Td, rowBackground, type ColumnDef } from "../components/ui/Table";
-import { decimal, decimalIsNegative, decimalPercent, shortDate } from "../lib/format";
+import { decimalPercent, decimalSignColour, shortDate } from "../lib/format";
 import { instrumentChartOption } from "../lib/instrument";
 import { c, mono } from "../lib/theme";
 
@@ -89,118 +89,6 @@ const INTERVAL_COLUMNS: readonly ColumnDef[] = [
   { label: "BENCH RETURN (TR)", align: "right" },
   { label: "EXCESS", align: "right" },
 ];
-
-/** Same tone table as `MethodBadge`'s, kept private and separate on purpose:
- *  the two badges must never share a component, or a future edit to one would
- *  silently restyle the other into looking like the same judgement. */
-const SPAN_TONE: Record<SpanCoverage, { color: string; label: string }> = {
-  full: { color: c.textMuted, label: "FULL" },
-  partial: { color: c.modelled, label: "PARTIAL" },
-  missing: { color: c.negative, label: "MISSING" },
-};
-
-/** The benchmark's own span coverage. Deliberately not `MethodBadge`: that
- *  component's "COVERAGE" label is the staleness judgement everywhere else in
- *  this app, and this is a span judgement instead -- see this file's own
- *  docstring and `Comparison.coverage` on the backend. */
-function BenchmarkSpanBadge({ span }: { span: SpanCoverage }) {
-  const tone = SPAN_TONE[span];
-  return (
-    <span
-      title="How much of the holding the benchmark series itself spans -- not how stale it is. A different question from the coverage badge above."
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        border: `1px solid ${c.borderStrong}`,
-        borderRadius: 4,
-        padding: "4px 9px",
-        fontSize: 11,
-        whiteSpace: "nowrap",
-      }}
-    >
-      <span style={{ fontFamily: mono, fontSize: 9.5, color: c.textFaint }}>BENCHMARK SPAN</span>
-      <span style={{ fontFamily: mono, color: tone.color }}>{tone.label}</span>
-    </span>
-  );
-}
-
-/** The proxy's total expense ratio, in the unit the API states: a PERCENTAGE
- *  per year, so it is re-punctuated with `decimal` and never passed through
- *  `decimalPercent` (which shifts the point two places because it takes a
- *  ratio). "0.20" reads as 0,20%/yr. */
-function terLabel(ter: string): string {
-  return `TER ${decimal(ter, 2, 2)}%/yr`;
-}
-
-interface BenchmarkSelectorProps {
-  benchmarks: readonly Benchmark[];
-  /** Non-null when the LIST could not be fetched, which is a different fact
-   *  from "none configured" and must not render the same. */
-  error: string | null;
-  selected: string | null;
-  onSelect: (key: string | null) => void;
-}
-
-/** The benchmark control, and -- when there is no control to draw -- the reason
- *  why.
- *
- *  `config/benchmarks.yaml` ships with every entry commented out, so the
- *  ordinary first-run state is an empty list. Rendering nothing at all left a
- *  reader unable to tell the comparison feature existed, which is the whole
- *  point of M3 section 4.3. A fetch failure is surfaced separately: collapsing
- *  it into the empty case would make a broken API look like a configuration
- *  choice, and swallowing an error is the one thing this codebase does not do.
- *
- *  Each proxy's TER rides beside its name because it is the proxy's own drag,
- *  and section 8.3 turns that into a reading instruction: a holding that beats
- *  the proxy by less than the TER has not necessarily beaten the market. It sits
- *  OUTSIDE the pill so the button's accessible name stays the benchmark's name. */
-function BenchmarkSelector({ benchmarks, error, selected, onSelect }: BenchmarkSelectorProps) {
-  if (error !== null) {
-    return (
-      <span style={{ fontSize: 11, color: c.negative }}>
-        Could not load the benchmark list. {error}.
-      </span>
-    );
-  }
-
-  if (benchmarks.length === 0) {
-    return (
-      <span style={{ fontSize: 11, color: c.textFaint }}>
-        No benchmark configured. Add one to{" "}
-        <code style={{ fontFamily: mono }}>config/benchmarks.yaml</code> to overlay a proxy.
-      </span>
-    );
-  }
-
-  return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-      <span style={{ fontFamily: mono, fontSize: 10, color: c.textFaint }}>BENCHMARK</span>
-      <Pill monospace active={selected === null} onClick={() => onSelect(null)}>
-        None
-      </Pill>
-      {benchmarks.map((b) => (
-        <span key={b.key} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-          <Pill monospace active={selected === b.key} onClick={() => onSelect(b.key)}>
-            {b.name}
-          </Pill>
-          <span
-            title="The proxy's own annual cost, reported and never subtracted -- adjusting for it would invent a series nobody published."
-            style={{ fontFamily: mono, fontSize: 9.5, color: c.textFaint }}
-          >
-            {terLabel(b.ter)}
-          </span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function signColour(value: string | null): string {
-  if (value == null) return c.textMuted;
-  return decimalIsNegative(value) ? c.negative : c.positive;
-}
 
 /** Matches a holding interval to its excess row by date, never by array
  *  position -- `comparison.intervals` carries in-market intervals only (an
@@ -249,7 +137,7 @@ function ExcessCell({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
-      <span style={{ color: signColour(row.excess) }}>{decimalPercent(row.excess)}</span>
+      <span style={{ color: decimalSignColour(row.excess) }}>{decimalPercent(row.excess)}</span>
       <span style={{ fontSize: 9.5, color: c.textFaint, textAlign: "right" }}>
         {basis}, arithmetic{ter === null ? "" : ` · ${terLabel(ter)}`}
       </span>
@@ -482,13 +370,13 @@ export function Instrument() {
                   <Td color={interval.in_market ? c.text : c.textFaint}>
                     {interval.in_market ? "In market" : "Out of market"}
                   </Td>
-                  <Td align="right" numeric color={signColour(interval.price_return)}>
+                  <Td align="right" numeric color={decimalSignColour(interval.price_return)}>
                     {decimalPercent(interval.price_return)}
                   </Td>
-                  <Td align="right" numeric color={signColour(row?.instrument_return ?? null)}>
+                  <Td align="right" numeric color={decimalSignColour(row?.instrument_return ?? null)}>
                     {row ? decimalPercent(row.instrument_return) : "—"}
                   </Td>
-                  <Td align="right" numeric color={signColour(row?.benchmark_return ?? null)}>
+                  <Td align="right" numeric color={decimalSignColour(row?.benchmark_return ?? null)}>
                     {row ? decimalPercent(row.benchmark_return) : "—"}
                   </Td>
                   <Td align="right" numeric>

@@ -30,11 +30,16 @@ reaches the first of those. `tests/integration/test_no_double_count.py` walks
 the import graph, so a transitive hop counts. `analytics/quotes.py` is the one
 safe source of FX: it deliberately names neither close column, which is exactly
 why it was split out of `prices.py`.
+
+**What moved out.** The arithmetic behind steps 2, 3 and 5, and the span
+judgement, live in `indexing.py` since M6a, so the portfolio comparison applies
+the same rules without reaching `total_return.py` through this file. The order
+above is still this module's to state and to follow.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -43,35 +48,27 @@ from typing import Protocol
 from sqlalchemy import Engine
 from sqlmodel import Session
 
-from app.analytics.adjusted import TotalReturnPoint
 from app.analytics.benchmark_return import benchmark_total_return_series
-from app.analytics.quotes import (
-    STALE_DAYS,
-    Quote,
-    base_currency,
-    in_base,
-    rate_history,
+from app.analytics.indexing import (
+    SPAN_MISSING,
+    SPAN_PARTIAL,
+    BasePoint,
+    IndexPoint,
+    in_base_points,
+    link,
+    rebase,
+    side_reason,
+    span_coverage,
+    worst_span,
 )
+from app.analytics.quotes import base_currency, rate_history
 from app.analytics.total_return import total_return_series
-from app.models.market import FxDaily
 from app.models.types import SpanCoverage
 
 #: Every return on this object is a total return. Stated on the object rather
 #: than assumed by the reader -- parent doc Sec 7.4: no endpoint returns an
 #: unlabelled return.
 BASIS = "total_return"
-
-#: The span vocabulary's own constants. `quotes.py` exports `FULL`, `PARTIAL`
-#: and `MISSING` typed `Coverage`, so returning one of those from a
-#: `SpanCoverage` function is precisely the mix this type split exists to
-#: prevent -- and mypy rejects it, which is the split earning its keep on the
-#: first edit after it landed.
-SPAN_FULL: SpanCoverage = "full"
-SPAN_PARTIAL: SpanCoverage = "partial"
-SPAN_MISSING: SpanCoverage = "missing"
-
-ONE = Decimal("1")
-HUNDRED = Decimal("100")
 
 
 class HoldingInterval(Protocol):
@@ -99,13 +96,6 @@ class HoldingInterval(Protocol):
 
     @property
     def in_market(self) -> bool: ...
-
-
-@dataclass(frozen=True, slots=True)
-class IndexPoint:
-    on: date
-    #: 100 at the start of the interval this point belongs to.
-    index: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,126 +170,6 @@ class Comparison:
     span: SpanCoverage
 
 
-@dataclass(frozen=True, slots=True)
-class _BasePoint:
-    """One day's total-return level, already in the owner's currency."""
-
-    on: date
-    value: Decimal
-
-
-def _in_base(
-    points: Sequence[TotalReturnPoint],
-    base: str,
-    rates: Mapping[tuple[str, str], list[FxDaily]],
-) -> tuple[tuple[_BasePoint, ...], int]:
-    """Convert every point to `base`. Step 2, and it must precede step 3.
-
-    Returns the convertible points and a count of the ones dropped for want of
-    a rate, because a series quietly shortened is how a return ends up measured
-    over a span nobody chose.
-    """
-    out: list[_BasePoint] = []
-    dropped = 0
-    for point in points:
-        quote = Quote(
-            close=point.close_adjusted,
-            currency=point.currency,
-            on=point.on,
-            # `Quote.source` exists to feed `classify()`, which this module
-            # never calls: coverage here is a question about the span the
-            # benchmark covers, not the age of any one quote. Left empty rather
-            # than filled with an invented provider name.
-            source="",
-        )
-        # Quantity 1: this is an index, not a valuation.
-        converted = in_base(quote, ONE, point.on, base, rates)
-        if converted is None:
-            dropped += 1
-            continue
-        out.append(_BasePoint(on=point.on, value=converted[0]))
-    return tuple(out), dropped
-
-
-def _rebase(
-    points: Sequence[_BasePoint], start: date, end: date
-) -> tuple[tuple[IndexPoint, ...], Decimal | None]:
-    """Index to 100 at `start`, and the total return to `end`. Step 3.
-
-    The window is the interval's, never the caller's viewport.
-    """
-    window = [p for p in points if start <= p.on <= end]
-    if not window or window[0].value == 0:
-        return (), None
-    first = window[0].value
-    index = tuple(IndexPoint(on=p.on, index=p.value / first * HUNDRED) for p in window)
-    return index, window[-1].value / first - ONE
-
-
-#: Worst news first, over the span vocabulary only. A private twin of
-#: `quotes.worst_coverage` rather than a call into it: that function ranks
-#: STALENESS and hands back a `Coverage`, so routing spans through it would
-#: return a type that can say `manual` and reintroduce, at the boundary, exactly
-#: the confusion `SpanCoverage` exists to remove.
-_SPAN_SEVERITY: dict[SpanCoverage, int] = {SPAN_FULL: 0, SPAN_PARTIAL: 1, SPAN_MISSING: 2}
-
-
-def _worst_span(values: Sequence[SpanCoverage]) -> SpanCoverage:
-    """The most severe span among `values`.
-
-    Empty is `full`, for the reason `quotes.worst_coverage` now spells out: an
-    empty set of observations carries no bad news. The case is unreachable here
-    anyway -- a comparison with no in-market interval returns early with
-    `missing`, which is this module saying at its own call site that ITS kind of
-    empty is the bad kind.
-    """
-    return max(values, key=lambda value: _SPAN_SEVERITY[value], default=SPAN_FULL)
-
-
-def _span_coverage(
-    points: Sequence[_BasePoint], start: date, end: date, measured: Decimal | None
-) -> SpanCoverage:
-    """How much of `start`..`end` the series actually spans.
-
-    `STALE_DAYS` is borrowed from `quotes.py` deliberately: it is already this
-    codebase's answer to "how long a gap is a weekend and a holiday, and how
-    long is a fault". A benchmark whose first point lands a month into a
-    quarter-long holding has not covered that holding, and differencing the two
-    returns anyway is precisely the plausible wrong number this file exists to
-    avoid.
-    """
-    if measured is None:
-        return SPAN_MISSING
-    window = [p for p in points if start <= p.on <= end]
-    if not window:
-        return SPAN_MISSING
-    # Compound names, so no local variable here can collide with the leak
-    # scanner's token list: it matches whole words case-insensitively, and an
-    # underscore is a word character.
-    opening_gap = (window[0].on - start).days
-    closing_gap = (end - window[-1].on).days
-    return (
-        SPAN_PARTIAL
-        if opening_gap > STALE_DAYS or closing_gap > STALE_DAYS
-        else SPAN_FULL
-    )
-
-
-def _link(returns: Sequence[Decimal | None]) -> Decimal | None:
-    """`(1 + a) * (1 + b) - 1` over the in-market intervals only.
-
-    `None` the moment any one link is `None`: a chain missing a link is not a
-    shorter chain, and silently dropping the unmeasurable stretch would report
-    the return of a holding period the owner never had.
-    """
-    total = ONE
-    for value in returns:
-        if value is None:
-            return None
-        total *= ONE + value
-    return total - ONE
-
-
 def _empty(benchmark_key: str) -> Comparison:
     """Nothing was held, so there is nothing to compare. `missing` rather than
     `full` for the reason `instrument_price_view` gives: an empty set of
@@ -317,32 +187,13 @@ def _empty(benchmark_key: str) -> Comparison:
     )
 
 
-def _side_reason(
-    what: str,
-    points: Sequence[_BasePoint],
-    interval: HoldingInterval,
-    coverage: SpanCoverage,
-) -> str | None:
-    """Why one side could not be measured over the whole of `interval`."""
-    span = f"{interval.start} to {interval.end}"
-    if coverage == SPAN_MISSING:
-        return f"no {what} data from {span}"
-    if coverage == SPAN_PARTIAL:
-        window = [p for p in points if interval.start <= p.on <= interval.end]
-        return (
-            f"{what} covers {window[0].on} to {window[-1].on}, "
-            f"not the whole of {span}"
-        )
-    return None
-
-
 def _reason(
     isin: str,
     benchmark_key: str,
     interval: HoldingInterval,
-    instrument: Sequence[_BasePoint],
+    instrument: Sequence[BasePoint],
     instrument_coverage: SpanCoverage,
-    benchmark: Sequence[_BasePoint],
+    benchmark: Sequence[BasePoint],
     benchmark_coverage: SpanCoverage,
 ) -> str | None:
     """Why the excess is `None`. `None` when it is not.
@@ -350,15 +201,21 @@ def _reason(
     Both sides, symmetrically. An earlier version asked the span question of
     the benchmark only, which let a 4-day instrument return be differenced
     against an 86-day benchmark return and published with no reason at all --
-    the exact subtraction `_span_coverage` exists to prevent, escaping through
+    the exact subtraction `span_coverage` exists to prevent, escaping through
     the side nobody checked.
     """
     parts = [
         text
         for text in (
-            _side_reason(isin, instrument, interval, instrument_coverage),
-            _side_reason(
-                f"benchmark {benchmark_key!r}", benchmark, interval, benchmark_coverage
+            side_reason(
+                isin, instrument, interval.start, interval.end, instrument_coverage
+            ),
+            side_reason(
+                f"benchmark {benchmark_key!r}",
+                benchmark,
+                interval.start,
+                interval.end,
+                benchmark_coverage,
             ),
         )
         if text is not None
@@ -395,10 +252,10 @@ def comparison(
         rates = rate_history(session)
 
     # Step 1, then step 2. Never the other way round.
-    instrument, _ = _in_base(
+    instrument, _ = in_base_points(
         total_return_series(engine, isin, start=start, end=end), base, rates
     )
-    benchmark, benchmark_dropped = _in_base(
+    benchmark, benchmark_dropped = in_base_points(
         benchmark_total_return_series(engine, benchmark_key, start=start, end=end),
         base,
         rates,
@@ -412,15 +269,15 @@ def comparison(
     for interval in held:
         # Step 3: rebased at THIS interval's start, so the answer is a property
         # of the holding rather than of the range control.
-        own_index, own_return = _rebase(instrument, interval.start, interval.end)
-        bench_index, bench_return = _rebase(benchmark, interval.start, interval.end)
+        own_index, own_return = rebase(instrument, interval.start, interval.end)
+        bench_index, bench_return = rebase(benchmark, interval.start, interval.end)
         # Both sides get the same span test. Only the benchmark's answer reaches
         # the badge -- see `Comparison.span` -- but both reach the reason,
         # because either side falling short makes the difference meaningless.
-        own_coverage = _span_coverage(
+        own_coverage = span_coverage(
             instrument, interval.start, interval.end, own_return
         )
-        bench_coverage = _span_coverage(
+        bench_coverage = span_coverage(
             benchmark, interval.start, interval.end, bench_return
         )
         spans.append(bench_coverage)
@@ -457,8 +314,8 @@ def comparison(
         )
 
     # Step 5, over the in-market intervals only.
-    linked_instrument = _link([row.instrument_return for row in rows])
-    linked_benchmark = _link([row.benchmark_return for row in rows])
+    linked_instrument = link([row.instrument_return for row in rows])
+    linked_benchmark = link([row.benchmark_return for row in rows])
     linked_excess = (
         linked_instrument - linked_benchmark
         if linked_instrument is not None
@@ -467,12 +324,12 @@ def comparison(
         else None
     )
 
-    span = _worst_span(spans)
+    span = worst_span(spans)
     if benchmark_dropped:
         # Days the benchmark could not be expressed in the owner's currency at
         # all. They do not move an endpoint-to-endpoint return, but the series
         # the reader sees is shorter than the one the provider sent.
-        span = _worst_span([span, SPAN_PARTIAL])
+        span = worst_span([span, SPAN_PARTIAL])
 
     return Comparison(
         basis=BASIS,

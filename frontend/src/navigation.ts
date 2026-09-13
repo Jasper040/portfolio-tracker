@@ -1,4 +1,4 @@
-/** The eleven screens, in the order the sidebar lists them.
+/** The twelve screens, in the order the sidebar lists them.
  *
  *  That order is an argument, not an alphabetisation: Dashboard answers "how am I
  *  doing", Positions, Transactions and Lots supply the evidence, and Import &
@@ -10,7 +10,10 @@
  *  Stock Detail for the same reason Lots sits after Transactions: it is the
  *  live counterpart of the screen just before it, the per-instrument view read
  *  from the ledger instead of the modelled dataset (M3 Task 9). The numbering
- *  in the sidebar makes the sequence explicit.
+ *  in the sidebar makes the sequence explicit. Performance sits right after
+ *  Benchmarks & Industry for the same reason: it is the live counterpart of the
+ *  modelled screen before it (M6a), whose industry sections stay modelled until
+ *  M6b.
  *
  *  `subtitle` is the promise each screen makes, shown under its title in the
  *  header. Keeping title and subtitle together here stops the two from drifting
@@ -27,6 +30,7 @@ export type TabId =
   | "whatif"
   | "div"
   | "bm"
+  | "perf"
   | "imp"
   | "set";
 
@@ -58,6 +62,12 @@ export const TABS: readonly TabDef[] = [
     subtitle: "Where performance came from",
   },
   {
+    id: "perf",
+    label: "Performance",
+    title: "Performance",
+    subtitle: "Time-weighted return, against a benchmark",
+  },
+  {
     id: "imp",
     label: "Import & Health",
     title: "Import & Data Health",
@@ -74,4 +84,4 @@ export function tabDef(id: TabId): TabDef {
 
 /** The screens currently backed by a real endpoint. Everything else renders
  *  from `portfolio/provider.ts` and is badged MODELLED. */
-export const LEDGER_BACKED: ReadonlySet<TabId> = new Set<TabId>(["pos", "tx", "lots", "instr"]);
+export const LEDGER_BACKED: ReadonlySet<TabId> = new Set<TabId>(["pos", "tx", "lots", "instr", "perf"]);

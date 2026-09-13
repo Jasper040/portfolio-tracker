@@ -8,6 +8,7 @@ import {
   decimalEur,
   decimalIsNegative,
   decimalPercent,
+  decimalSignColour,
   eur,
   eurCompact,
   eurSigned,
@@ -17,6 +18,7 @@ import {
   shortDate,
   signColor,
 } from "./format";
+import { c } from "./theme";
 
 /** U+2212 MINUS, not a hyphen. Spelled out so a failure message shows which one
  *  actually came back rather than two visually identical strings. */
@@ -249,6 +251,14 @@ describe("sign colours", () => {
     expect(costColor(1)).toBe("#E5534B");
     expect(costColor(-1)).toBe("#3FB950");
     expect(costColor(1)).not.toBe(signColor(1));
+  });
+});
+
+describe("decimalSignColour", () => {
+  it("colours by the string's sign and mutes a null, never parsing the figure", () => {
+    expect(decimalSignColour(null)).toBe(c.textMuted);
+    expect(decimalSignColour("-0.0200")).toBe(c.negative);
+    expect(decimalSignColour("0.0200")).toBe(c.positive);
   });
 });
 

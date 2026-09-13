@@ -62,6 +62,7 @@ caller to hit.
 | M6a-8 | `benchmark_total_return_series` **moves out of `total_return.py`** into its own module. Reasoning in section 6.1. |
 | M6a-9 | The guard's endpoint list is **derived, not hardcoded**. Reasoning in section 6.2. |
 | M6a-10 | The comparison is **labelled on both sides**: the portfolio's dividends sit idle in cash and are net of withholding, the benchmark's are reinvested and gross. Reasoning in section 7. |
+| M6a-11 | A `DEPOSIT` or `WITHDRAWAL`, and the cash it moves, take effect on its **value date**, falling back to its booking date when the ledger recorded none; every other transaction type keeps its booking date. Reasoning in section 3.5. |
 
 ---
 
@@ -177,7 +178,7 @@ For each day `d` with a predecessor:
 
 `V` is `ValuationPoint.value_base` — holdings at the unadjusted close plus cash, already
 converted to base currency and already carrying a coverage verdict. `F(d)` is the net
-external flow booked on day `d`.
+external flow value-dated to day `d` (M6a-11).
 
 Nothing else is needed. There is no separate dividend term (dividends are in `V` through
 cash), no separate fee term (fees are in `V` through cash, which is what §6 means by
@@ -220,6 +221,32 @@ once each.
 first day after the first day where `V > 0`. Before the first deposit there is no capital
 and no return to measure, which is a different statement from a return of zero.
 
+### 3.5 Which date a flow carries
+
+M6a-11: a `DEPOSIT` or `WITHDRAWAL`, and the cash it moves, take effect on its value date,
+falling back to its booking date when the ledger recorded none; every other transaction
+type keeps its booking date.
+
+A real export books an iDEAL deposit a calendar day after the broker already made it
+spendable, and records the earlier day as the row's own value date. A buy placed in
+between spends money the broker had already made available. Dated and cashed on the
+later, booking day instead, that deposit left the buy it funded against a cash balance
+close to zero: the previous close's value shrank to a residual, and an ordinary market
+move on the day was divided by that residual rather than by the portfolio it actually
+belonged to.
+
+M6a-5 already requires a flow effective at the close of the day it is dated, and section
+3.3's claim that `V` is continuous across a trade depends on the money already being
+there on the day it is. Both need the **value date**; the booking date is only the
+fallback for a row where the ledger recorded no value date at all.
+
+**A known limit.** The implementation plan's P-2 gives a link no return only when its
+denominator is zero or negative. A denominator that is small and still positive — for
+instance, a flow with no recorded value date, booked after the trade it funded — passes
+that guard untouched. The only backstop against it is the realdata acceptance bound that
+no single day may double or erase the portfolio; a smaller residual than this export
+happens to produce would not necessarily be caught by it.
+
 ---
 
 ## 4. Coverage on a differenced series
@@ -261,8 +288,9 @@ api/routes_performance.py      NEW    the endpoint
 ```
 
 `flows.py` selects `Transaction` rows where `txn_type` is `DEPOSIT` or `WITHDRAWAL` and
-sums `net_base` per day. It names no close column and touches no price table. Small
-enough to be pure and to carry hand-computed fixtures the way `domain/lots.py` does.
+sums `net_base` per value date (M6a-11). It names no close column and touches no price
+table. Small enough to be pure and to carry hand-computed fixtures the way
+`domain/lots.py` does.
 
 `portfolio_return.py` consumes a `ValuationSeries` and a flow mapping and returns runs of
 linked returns. **It names no close column at all** — it inherits that from

@@ -403,3 +403,33 @@ def _resolved_sqlite_path(url: str) -> str | None:
         candidate = path if path.is_absolute() else (REPO / "backend" / path)
         return url if candidate.exists() else None
     return url or None
+
+
+#: Account.csv descriptions that cross the account boundary: Sec 3.3's genuine
+#: deposits and withdrawal, plus the flatex transfers to and from the owner's
+#: own bank. Matched here by prefix on the raw CSV, never through
+#: `account_csv.classify`, for the reason this module's docstring gives.
+_EXTERNAL_FLOW_PREFIXES = (
+    "ideal deposit",
+    "sepa instant terugstorting",
+    "processed flatex withdrawal",
+    "flatex terugstorting",
+)
+
+
+def external_flow_total() -> tuple[int, Decimal]:
+    """How many EUR rows cross the account boundary, and their signed sum."""
+    count = 0
+    total = _ZERO
+    with (EXPORT / "Account.csv").open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        next(reader)
+        for row in reader:
+            if (
+                len(row) > 8
+                and row[5].strip().casefold().startswith(_EXTERNAL_FLOW_PREFIXES)
+                and row[7].strip() == "EUR"
+            ):
+                count += 1
+                total += _decimal(row[8]) or _ZERO
+    return count, total

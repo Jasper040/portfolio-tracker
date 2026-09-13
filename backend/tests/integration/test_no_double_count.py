@@ -222,6 +222,10 @@ def test_the_read_side_modules_exist_so_this_is_not_vacuous() -> None:
     assert any(path.name == "total_return.py" for path in modules)
     assert any(path.name == "instrument_price.py" for path in modules)
     assert any(path.name == "instrument_return.py" for path in modules)
+    assert any(path.name == "indexing.py" for path in modules)
+    assert any(path.name == "flows.py" for path in modules)
+    assert any(path.name == "portfolio_return.py" for path in modules)
+    assert any(path.name == "portfolio_benchmark.py" for path in modules)
 
 def test_the_exempt_set_names_files_that_actually_exist() -> None:
     """An exemption for a deleted file is a hole nobody would notice: it would
@@ -307,6 +311,7 @@ def test_the_route_modules_are_discovered_so_this_is_not_vacuous() -> None:
     assert modules
     assert "app.api.routes_valuation" in modules
     assert "app.api.routes_positions" in modules
+    assert "app.api.routes_performance" in modules
 
 
 def test_the_exempt_routes_name_endpoints_that_actually_exist() -> None:
@@ -386,3 +391,85 @@ def test_the_instrument_route_reaches_both_modules_but_names_neither_column() ->
     names = _identifiers(APP / "api" / "routes_instrument.py")
     assert UNADJUSTED not in names
     assert ADJUSTED not in names
+
+
+def test_the_shared_index_arithmetic_reaches_no_reader() -> None:
+    """`indexing.py` is imported by the instrument comparison AND the portfolio
+    comparison, so a read added to it would reach both at once. It stays
+    arithmetic: no price reader, no adjusted-close reader, no valuation.
+
+    The `is_file` assertion is not decoration -- `_reachable_from` skips a module
+    that does not exist, so without it this passes vacuously."""
+    assert (APP / "analytics" / "indexing.py").is_file()
+    reachable = _reachable_from("app.analytics.indexing")
+    for reader in (
+        "app.analytics.total_return",
+        "app.analytics.benchmark_return",
+        "app.analytics.prices",
+        "app.analytics.valuation",
+    ):
+        assert reader not in reachable, reader
+
+
+def test_the_portfolio_return_module_cannot_reach_an_adjusted_close_reader() -> None:
+    """M6a-2. `portfolio_return.py` values the portfolio on the unadjusted close
+    plus cash, and cash already carries every dividend, so reaching an adjusted
+    reader would put Sec 7.5's double count one import away. The benchmark reader
+    is excluded too: the comparison is composed in the route, so M6b can consume
+    this module without acquiring a benchmark."""
+    assert (APP / "analytics" / "portfolio_return.py").is_file()
+    reachable = _reachable_from("app.analytics.portfolio_return")
+    assert "app.analytics.valuation" in reachable
+    assert "app.analytics.total_return" not in reachable
+    assert "app.analytics.benchmark_return" not in reachable
+
+
+def test_the_flow_reader_reaches_no_other_analytics_module() -> None:
+    """`flows.py` reads the ledger and nothing else: no price, no close, no FX."""
+    assert (APP / "analytics" / "flows.py").is_file()
+    others = {
+        module
+        for module in _reachable_from("app.analytics.flows")
+        if module.startswith("app.analytics.") and not module.startswith("app.analytics.flows")
+    }
+    assert not others, others
+
+
+def test_the_portfolio_comparison_reaches_a_benchmark_and_no_holding() -> None:
+    """M6a section 6.1, the reason the benchmark reader was split out. This
+    module needs a benchmark's adjusted closes and must be provably unable to
+    reach any holding's -- or the unadjusted-close readers, which it has no
+    use for."""
+    assert (APP / "analytics" / "portfolio_benchmark.py").is_file()
+    reachable = _reachable_from("app.analytics.portfolio_benchmark")
+    assert "app.analytics.benchmark_return" in reachable
+    assert "app.analytics.total_return" not in reachable
+    assert "app.analytics.prices" not in reachable
+    assert "app.analytics.valuation" not in reachable
+
+
+def test_the_performance_route_reaches_a_benchmark_but_no_holdings_adjusted_close() -> None:
+    """M6a section 6. The first endpoint to need both lanes in one response: it
+    reaches valuation and the benchmark reader, cannot reach the total-return
+    module, and -- like the instrument route -- names neither column itself.
+
+    It is NOT in `EXEMPT_ROUTES`. The discovered route list covered it the moment
+    the file existed, and the general call-path test above already holds it to
+    the rule; this test says why it passes."""
+    route = "app.api.routes_performance"
+    assert route not in EXEMPT_ROUTES
+    reachable = _reachable_from(route)
+    assert "app.analytics.valuation" in reachable
+    assert "app.analytics.benchmark_return" in reachable
+    assert "app.analytics.total_return" not in reachable
+    names = _identifiers(APP / "api" / "routes_performance.py")
+    assert UNADJUSTED not in names
+    assert ADJUSTED not in names
+
+
+def test_the_shared_route_dependencies_reach_no_analytics_module() -> None:
+    """`get_benchmarks` moved here so a route can have it without importing
+    `routes_instrument.py`, which reaches `total_return.py`. A shared dependency
+    module that imported analytics would reopen that path for every route."""
+    reachable = _reachable_from("app.api.dependencies")
+    assert not {module for module in reachable if module.startswith("app.analytics.")}

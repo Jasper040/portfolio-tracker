@@ -25,7 +25,7 @@ never touched from this module (M2 spec section 4).
 `through` is why that still holds with a daily series in it. The ledger says when
 you last traded, not when you last held, so the series needs an end date the
 ledger cannot supply -- and taking it as a parameter, defaulting to the last
-trade date, keeps `rebuild(engine, method)` a function of its inputs while
+ledger day, keeps `rebuild(engine, method)` a function of its inputs while
 letting the CLI ask for "up to today".
 """
 
@@ -41,7 +41,7 @@ from sqlmodel import Session, select
 
 from app.domain.lots import LotMethod, match_lots
 from app.domain.orders import charges_of, is_share_movement, to_lot_transactions
-from app.domain.positions import daily_series
+from app.domain.positions import cash_effective_date, daily_series
 from app.domain.splits import apply_splits, derive_splits
 from app.models.ledger import CashDaily, Lot, LotClosure, PositionDaily, Transaction
 
@@ -88,13 +88,21 @@ def rebuild(
     """Recompute the derived tables for one method, replacing what is there.
 
     `through` is the last day of the daily series. `None` means the ledger's own
-    last trade date, which keeps this deterministic; the CLI passes today's date
-    so a position held since the last trade keeps appearing on the chart.
+    last day, which keeps this deterministic; the CLI passes today's date so a
+    position held since the last trade keeps appearing on the chart.
+
+    The last ledger day is the latest trade date OR cash effective date. A
+    deposit or withdrawal moves cash on its value date
+    (`domain.positions.cash_effective_date`), and one value-dated after every
+    booking would otherwise fall past the series' last day and be left out of
+    `cash_daily` silently.
     """
     with Session(engine) as session:
         rows = list(session.exec(select(Transaction)).all())
 
-    window_end = through or max((row.trade_date for row in rows), default=date.min)
+    window_end = through or max(
+        (max(row.trade_date, cash_effective_date(row)) for row in rows), default=date.min
+    )
     series = daily_series(rows, through=window_end)
 
     splits = derive_splits(rows)

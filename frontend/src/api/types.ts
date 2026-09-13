@@ -290,3 +290,74 @@ export interface Benchmark {
    *  a percentage. */
   ter: string;
 }
+
+/** One day's time-weighted return, measured from the previous valuation day's
+ *  close. Mirrors `ReturnLinkOut`. `daily_return` is `null` -- never "0" -- when
+ *  either close had no valuation or the day before had no capital, and `reason`
+ *  says which. */
+export interface ReturnLink {
+  date: string;
+  since: string;
+  flow_base: string;
+  daily_return: string | null;
+  coverage: Coverage;
+  reason: string | null;
+}
+
+/** A contiguous stretch of measurable days and its one figure. Mirrors
+ *  `ReturnRunOut`. */
+export interface ReturnRun {
+  start: string;
+  end: string;
+  days: number;
+  linked_return: string;
+  coverage: Coverage;
+}
+
+/** One run against the benchmark. Mirrors `RunExcessOut`. `excess` is the
+ *  ARITHMETIC difference, as on `IntervalExcess`, and `null` with a `reason`
+ *  when the benchmark does not span the run. */
+export interface RunExcess {
+  start: string;
+  end: string;
+  portfolio_return: string;
+  benchmark_return: string | null;
+  excess: string | null;
+  span: SpanCoverage;
+  reason: string | null;
+}
+
+/** The portfolio against one benchmark. Mirrors `PortfolioComparisonOut`.
+ *  `basis` and `dividends` describe the BENCHMARK side; `PerformanceReport`
+ *  carries the portfolio's. */
+export interface PortfolioComparison {
+  basis: string;
+  dividends: string;
+  benchmark_key: string;
+  benchmark_index: IndexPoint[];
+  runs: RunExcess[];
+  benchmark_return: string | null;
+  excess: string | null;
+  span: SpanCoverage;
+}
+
+/** The portfolio's time-weighted return over a window. Mirrors `PerformanceOut`.
+ *  `linked_return` is `null` whenever the window holds a gap -- no single figure
+ *  spans one (M6a-7) -- and `runs` still carries a figure per stretch. */
+export interface PerformanceReport extends Provenance {
+  basis: string;
+  lane: string;
+  dividends: string;
+  base_currency: string;
+  start: string | null;
+  end: string | null;
+  requested_from: string | null;
+  clamped: boolean;
+  links: ReturnLink[];
+  runs: ReturnRun[];
+  portfolio_index: IndexPoint[];
+  linked_return: string | null;
+  gaps: number;
+  reason: string | null;
+  comparison: PortfolioComparison | null;
+}
