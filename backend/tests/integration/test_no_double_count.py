@@ -428,3 +428,16 @@ def test_the_flow_reader_reaches_no_other_analytics_module() -> None:
         if module.startswith("app.analytics.") and not module.startswith("app.analytics.flows")
     }
     assert not others, others
+
+
+def test_the_portfolio_comparison_reaches_a_benchmark_and_no_holding() -> None:
+    """M6a section 6.1, the reason the benchmark reader was split out. This
+    module needs a benchmark's adjusted closes and must be provably unable to
+    reach any holding's -- or the unadjusted-close readers, which it has no
+    use for."""
+    assert (APP / "analytics" / "portfolio_benchmark.py").is_file()
+    reachable = _reachable_from("app.analytics.portfolio_benchmark")
+    assert "app.analytics.benchmark_return" in reachable
+    assert "app.analytics.total_return" not in reachable
+    assert "app.analytics.prices" not in reachable
+    assert "app.analytics.valuation" not in reachable

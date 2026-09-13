@@ -23,7 +23,7 @@ from sqlmodel import Session
 from app.analytics.rebuild import rebuild
 from app.db import create_engine_and_tables
 from app.models.ledger import Account, ImportBatch, Transaction
-from app.models.market import PriceDaily
+from app.models.market import BenchmarkDaily, FxDaily, PriceDaily
 
 D = Decimal
 ZERO = D("0.00")
@@ -112,6 +112,35 @@ class Ledger:
                     id=uuid4(), isin=isin, price_date=on, close_unadjusted=D(price),
                     close_adjusted=D(price) / 2, currency="EUR", source="yahoo",
                     fetched_at=FETCHED,
+                )
+            )
+            session.commit()
+        return self
+
+    def benchmark(
+        self, on: date, close: str, *, key: str = "world", currency: str = "EUR"
+    ) -> "Ledger":
+        """One benchmark close. The unadjusted close is a flat 100.00 on every
+        day, so a reader taking the wrong column reports a benchmark that went
+        nowhere rather than the same number."""
+        with Session(self._engine) as session:
+            session.add(
+                BenchmarkDaily(
+                    id=uuid4(), key=key, price_date=on, close_unadjusted=D("100.00"),
+                    close_adjusted=D(close), currency=currency, source="yahoo",
+                    fetched_at=FETCHED,
+                )
+            )
+            session.commit()
+        return self
+
+    def rate(self, on: date, from_ccy: str, value: str) -> "Ledger":
+        """Units of `from_ccy` per 1 EUR -- divide by it to reach EUR."""
+        with Session(self._engine) as session:
+            session.add(
+                FxDaily(
+                    id=uuid4(), from_ccy=from_ccy, to_ccy="EUR", rate_date=on,
+                    rate=D(value), source="ecb", fetched_at=FETCHED,
                 )
             )
             session.commit()
