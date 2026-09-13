@@ -4349,7 +4349,7 @@ EOF
 | 1.1 chain-linked daily series; window figure with coverage verdict | 3 |
 | 1.1 benchmark comparison on that series | 4, 5 |
 | 1.1 a performance screen | 6, 7 |
-| 1.1 / 6 the two structural findings | done in PT-27, PT-28; Task 5 asserts the derived list contains the new route |
+| 1.1 / 6 the two structural findings | not this plan's work: PT-27, PT-28; Task 5 asserts the derived list contains the new route |
 | M6a-2 unadjusted lane | 3 (imports `valuation`; guard forbids `total_return`) |
 | M6a-3 cash counts and contributes zero | 3 (trade tests through `rebuild()`) |
 | M6a-4 daily boundaries | 3 |

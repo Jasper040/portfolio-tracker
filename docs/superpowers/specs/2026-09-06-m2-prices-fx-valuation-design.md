@@ -188,7 +188,8 @@ times.
 **`cash_daily`** — `(cash_date, balance_base)`. A running sum of `net_base`, so it is
 pure ledger arithmetic and belongs on the derived side. It exists because M2-4 makes
 value net of cash, and `domain/positions.py` produces it from the same pass that
-produces positions.
+produces positions. Since M6a, a `DEPOSIT` or `WITHDRAWAL` enters the balance on its
+value date rather than its booking date (M6a design, M6a-11).
 
 Money stays `Decimal` throughout, via the existing `DecimalString` column type. No
 SQLite-only features; the schema stays portable per §4.3.
