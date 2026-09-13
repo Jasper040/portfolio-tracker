@@ -74,7 +74,7 @@ import { MethodBadge } from "../components/ui/MethodBadge";
 import { Notice } from "../components/ui/Notice";
 import { Panel } from "../components/ui/Panel";
 import { HeadRow, Table, TableFrame, Td, rowBackground, type ColumnDef } from "../components/ui/Table";
-import { decimalIsNegative, decimalPercent, shortDate } from "../lib/format";
+import { decimalPercent, decimalSignColour, shortDate } from "../lib/format";
 import { instrumentChartOption } from "../lib/instrument";
 import { c, mono } from "../lib/theme";
 
@@ -89,11 +89,6 @@ const INTERVAL_COLUMNS: readonly ColumnDef[] = [
   { label: "BENCH RETURN (TR)", align: "right" },
   { label: "EXCESS", align: "right" },
 ];
-
-function signColour(value: string | null): string {
-  if (value == null) return c.textMuted;
-  return decimalIsNegative(value) ? c.negative : c.positive;
-}
 
 /** Matches a holding interval to its excess row by date, never by array
  *  position -- `comparison.intervals` carries in-market intervals only (an
@@ -142,7 +137,7 @@ function ExcessCell({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1 }}>
-      <span style={{ color: signColour(row.excess) }}>{decimalPercent(row.excess)}</span>
+      <span style={{ color: decimalSignColour(row.excess) }}>{decimalPercent(row.excess)}</span>
       <span style={{ fontSize: 9.5, color: c.textFaint, textAlign: "right" }}>
         {basis}, arithmetic{ter === null ? "" : ` · ${terLabel(ter)}`}
       </span>
@@ -375,13 +370,13 @@ export function Instrument() {
                   <Td color={interval.in_market ? c.text : c.textFaint}>
                     {interval.in_market ? "In market" : "Out of market"}
                   </Td>
-                  <Td align="right" numeric color={signColour(interval.price_return)}>
+                  <Td align="right" numeric color={decimalSignColour(interval.price_return)}>
                     {decimalPercent(interval.price_return)}
                   </Td>
-                  <Td align="right" numeric color={signColour(row?.instrument_return ?? null)}>
+                  <Td align="right" numeric color={decimalSignColour(row?.instrument_return ?? null)}>
                     {row ? decimalPercent(row.instrument_return) : "—"}
                   </Td>
-                  <Td align="right" numeric color={signColour(row?.benchmark_return ?? null)}>
+                  <Td align="right" numeric color={decimalSignColour(row?.benchmark_return ?? null)}>
                     {row ? decimalPercent(row.benchmark_return) : "—"}
                   </Td>
                   <Td align="right" numeric>

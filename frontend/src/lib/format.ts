@@ -15,6 +15,8 @@
  *    possible moment. `decimal` re-punctuates the digits and never parses them.
  */
 
+import { c } from "./theme";
+
 const NL = "nl-NL";
 
 /* ── computed values (floats) ─────────────────────────────────────────────── */
@@ -260,6 +262,15 @@ export function annualisedPercent(
  *  not corrupt a figure. */
 export function decimalIsNegative(value: string | null | undefined): boolean {
   return typeof value === "string" && value.trim().startsWith("-");
+}
+
+/** The colour for a ledger figure's sign: muted for `null`, red for a negative
+ *  string, green otherwise. Decided on the string, never a parsed number --
+ *  see `decimalIsNegative`. One definition for every screen that colours a
+ *  return or a P&L cell. */
+export function decimalSignColour(value: string | null | undefined): string {
+  if (value == null) return c.textMuted;
+  return decimalIsNegative(value) ? c.negative : c.positive;
 }
 
 /* ── semantics ────────────────────────────────────────────────────────────── */

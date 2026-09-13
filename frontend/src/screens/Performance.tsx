@@ -49,7 +49,7 @@ import {
   type ColumnDef,
 } from "../components/ui/Table";
 import { TileGrid, type Tile } from "../components/ui/Tiles";
-import { decimalIsNegative, decimalPercent, shortDate } from "../lib/format";
+import { decimalPercent, decimalSignColour, shortDate } from "../lib/format";
 import { dividendTreatment, performanceChartOption } from "../lib/performance";
 import { c, mono } from "../lib/theme";
 import { RANGE_PRESETS, rangeStart, type RangePreset } from "../lib/valuation";
@@ -63,11 +63,6 @@ const RUN_COLUMNS: readonly ColumnDef[] = [
   { label: "BENCH (TR)", align: "right" },
   { label: "EXCESS", align: "right" },
 ];
-
-function signColour(value: string | null): string {
-  if (value == null) return c.textMuted;
-  return decimalIsNegative(value) ? c.negative : c.positive;
-}
 
 /** A run's benchmark row, matched on its span and never on array position. */
 function excessFor(comparison: PortfolioComparison | null, run: ReturnRun): RunExcess | null {
@@ -92,7 +87,7 @@ function headlineTiles(report: PerformanceReport, benchmark: Benchmark | null): 
     {
       label: "TIME-WEIGHTED RETURN",
       value: decimalPercent(report.linked_return),
-      color: signColour(report.linked_return),
+      color: decimalSignColour(report.linked_return),
       sub: report.linked_return === null ? report.reason : `${window} · ${report.basis}`,
     },
     {
@@ -103,7 +98,7 @@ function headlineTiles(report: PerformanceReport, benchmark: Benchmark | null): 
     {
       label: "EXCESS",
       value: comparison ? decimalPercent(comparison.excess) : "—",
-      color: signColour(comparison?.excess ?? null),
+      color: decimalSignColour(comparison?.excess ?? null),
       sub: excessNote(report),
     },
     {
@@ -148,7 +143,7 @@ function ExcessCell({ row }: { row: RunExcess | null }) {
       </div>
     );
   }
-  return <span style={{ color: signColour(row.excess) }}>{decimalPercent(row.excess)}</span>;
+  return <span style={{ color: decimalSignColour(row.excess) }}>{decimalPercent(row.excess)}</span>;
 }
 
 export function Performance() {
@@ -286,13 +281,13 @@ export function Performance() {
                   <Td numeric>{shortDate(run.start)}</Td>
                   <Td numeric>{shortDate(run.end)}</Td>
                   <Td align="right" numeric>{run.days}</Td>
-                  <Td align="right" numeric color={signColour(run.linked_return)}>
+                  <Td align="right" numeric color={decimalSignColour(run.linked_return)}>
                     {decimalPercent(run.linked_return)}
                   </Td>
                   <Td align="right" numeric color={run.coverage === "full" ? c.textFaint : c.modelled}>
                     {run.coverage}
                   </Td>
-                  <Td align="right" numeric color={signColour(row?.benchmark_return ?? null)}>
+                  <Td align="right" numeric color={decimalSignColour(row?.benchmark_return ?? null)}>
                     {row ? decimalPercent(row.benchmark_return) : "—"}
                   </Td>
                   <Td align="right" numeric>

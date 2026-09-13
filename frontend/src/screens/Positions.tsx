@@ -38,8 +38,8 @@ import {
 import {
   decimal,
   decimalEur,
-  decimalIsNegative,
   decimalPercent,
+  decimalSignColour,
   shortDate,
 } from "../lib/format";
 import { c, mono } from "../lib/theme";
@@ -80,11 +80,6 @@ export interface PositionsProps {
 interface LivePages {
   series: ValuationSeries;
   positions: PositionsPage;
-}
-
-function signColour(value: string | null): string {
-  if (value == null) return c.textMuted;
-  return decimalIsNegative(value) ? c.negative : c.positive;
 }
 
 export function Positions({ method, onOpenInstrument }: PositionsProps) {
@@ -253,17 +248,17 @@ export function Positions({ method, onOpenInstrument }: PositionsProps) {
                 <Td
                   align="right"
                   numeric
-                  color={signColour(row.gross_unrealised_base)}
+                  color={decimalSignColour(row.gross_unrealised_base)}
                 >
                   {decimalEur(row.gross_unrealised_base)}
                 </Td>
                 <Td align="right" numeric color={c.textMuted}>
                   {decimalEur(row.charges_base)}
                 </Td>
-                <Td align="right" numeric color={signColour(row.unrealised_base)}>
+                <Td align="right" numeric color={decimalSignColour(row.unrealised_base)}>
                   {decimalEur(row.unrealised_base)}
                 </Td>
-                <Td align="right" numeric color={signColour(row.unrealised_base)}>
+                <Td align="right" numeric color={decimalSignColour(row.unrealised_base)}>
                   {decimalPercent(row.unrealised_pct)}
                 </Td>
                 <Td align="right" numeric color={c.textMuted}>
@@ -300,7 +295,7 @@ export function Positions({ method, onOpenInstrument }: PositionsProps) {
                 padding="10px 11px"
                 align="right"
                 numeric
-                color={signColour(positions.total_unrealised_base)}
+                color={decimalSignColour(positions.total_unrealised_base)}
               >
                 {decimalEur(positions.total_unrealised_base)}
               </Td>
