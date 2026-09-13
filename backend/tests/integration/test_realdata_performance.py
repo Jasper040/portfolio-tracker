@@ -96,6 +96,7 @@ class TestTheSeries:
         assert measured.links, "no link to measure; the checks below would be vacuous"
 
     def test_every_run_is_the_product_of_its_links(self, measured: PortfolioReturn) -> None:
+        assert measured.runs, "no measurable run in the window; the product check would be vacuous"
         for run in measured.runs:
             growth = D("1")
             for step in run.links:
@@ -142,6 +143,9 @@ class TestTheBenchmark:
         with Session(local) as session:
             if not session.exec(select(BenchmarkDaily)).first():
                 pytest.skip("benchmark cache is empty; run `python -m app.cli fetch-prices` first")
+        assert (
+            measured.runs
+        ), "no measurable run in the window; the comparison check would be vacuous"
         comparison = compare_to_benchmark(
             local, measured.runs,
             window_return=measured.linked_return, benchmark_key=benchmarks[0].key,
