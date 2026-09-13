@@ -386,3 +386,21 @@ def test_the_instrument_route_reaches_both_modules_but_names_neither_column() ->
     names = _identifiers(APP / "api" / "routes_instrument.py")
     assert UNADJUSTED not in names
     assert ADJUSTED not in names
+
+
+def test_the_shared_index_arithmetic_reaches_no_reader() -> None:
+    """`indexing.py` is imported by the instrument comparison AND the portfolio
+    comparison, so a read added to it would reach both at once. It stays
+    arithmetic: no price reader, no adjusted-close reader, no valuation.
+
+    The `is_file` assertion is not decoration -- `_reachable_from` skips a module
+    that does not exist, so without it this passes vacuously."""
+    assert (APP / "analytics" / "indexing.py").is_file()
+    reachable = _reachable_from("app.analytics.indexing")
+    for reader in (
+        "app.analytics.total_return",
+        "app.analytics.benchmark_return",
+        "app.analytics.prices",
+        "app.analytics.valuation",
+    ):
+        assert reader not in reachable, reader
