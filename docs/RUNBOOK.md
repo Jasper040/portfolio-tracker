@@ -306,7 +306,7 @@ of a CSV into a test or a comment, that is what will tell you.
 
 ```powershell
 cd frontend
-npm test             # 189 Vitest tests: lib/, api/ and the live-data screen components
+npm test             # 215 Vitest tests: lib/, api/ and the live-data screen components
 npm run test:watch   # same, in watch mode
 npm run typecheck    # tsc --noEmit, strict + noUncheckedIndexedAccess
 npm run build        # tsc -b && vite build -> dist/

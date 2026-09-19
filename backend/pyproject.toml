@@ -47,6 +47,31 @@ addopts = ["-m", "not realdata"]
 markers = [
     "realdata: runs against the owner's real DeGiro exports; skipped unless they exist",
 ]
+# Two standing warnings from the locked FastAPI/Starlette test client, neither
+# from project code (PT-45). Silenced narrowly, by message, rather than by
+# category or module: a blanket ignore would also swallow the next deprecation,
+# and standing noise is what trains a reader to stop looking at the warnings
+# summary -- which is the whole reason these are worth removing.
+#
+# Upgrading was tried first and had nothing to offer: on 2026-09-19 the lock was
+# already at fastapi 0.141.1 / starlette 1.6.0, and
+# `uv lock --upgrade-package starlette --upgrade-package fastapi
+#  --upgrade-package anyio` resolved to no change.
+filterwarnings = [
+    # Starlette 1.6 asks test-client users to swap httpx for httpx2. httpx is a
+    # RUNTIME dependency here -- `providers/` needs a real HTTP client, and the
+    # note beside it in [project] dependencies is explicit that a second client
+    # would mean a second timeout and TLS configuration. Declining for now is a
+    # decision, not an oversight; revisit if httpx2 becomes what httpx is.
+    #
+    # Note the category: despite the name, StarletteDeprecationWarning subclasses
+    # UserWarning, so a filter written against DeprecationWarning would miss it
+    # and the warning would still appear.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+    # Raised from starlette/testclient.py at import time, reached through
+    # fastapi.testclient by the API test modules. Only Starlette can fix it.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100
