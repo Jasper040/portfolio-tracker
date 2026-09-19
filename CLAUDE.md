@@ -53,7 +53,7 @@ Types: `feat` `fix` `refactor` `docs` `test` `chore` `perf` `ci`.
 fix(analytics): split valuation three ways (PT-12)
 ```
 
-Milestone work happens on a branch and merges to `master` with a merge commit.
+Milestone work happens on a branch and merges to `main` with a merge commit.
 
 ## Ground rules that bite
 
