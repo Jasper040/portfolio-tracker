@@ -241,3 +241,48 @@ describe("what the screen says when there is nothing to show", () => {
     expect(await screen.findByText(/Asked for/)).toBeInTheDocument();
   });
 });
+
+describe("the label under a refetch", () => {
+  /** Regression, found in review before merge. Dropping the `loading` render
+   *  gate (PT-46) left the previous report on screen during a refetch, which is
+   *  the point -- but the benchmark NAME beside it was still read from the live
+   *  control. Picking a second benchmark therefore showed the first one's
+   *  figures under the second one's name, and clearing the benchmark showed a
+   *  real excess under "No benchmark selected".
+   *
+   *  The name now comes from `report.comparison.benchmark_key` -- the response's
+   *  own account of what it compared against -- the same instinct as the
+   *  MethodBadge reading the envelope's method rather than the prop.
+   */
+  it("keeps the old benchmark's name on the old figures until the new report lands", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    mockBenchmarks.mockResolvedValue([
+      benchmark(),
+      benchmark({ key: "sp500", name: "US Large Cap", ter: "0.07" }),
+    ]);
+
+    let release: (r: PerformanceReport) => void = () => {};
+    mockPerformance
+      .mockResolvedValueOnce(report({ comparison: comparison() }))
+      .mockImplementationOnce(
+        () => new Promise<PerformanceReport>((resolve) => { release = resolve; }),
+      );
+
+    render(<Performance />);
+    // Matched on the TILE's own wording, not the bare name: the name is also a
+    // button in the selector, and asserting on it alone passes against the bug.
+    expect(await screen.findByText(/World Equities · TER/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "US Large Cap" }));
+
+    // The in-flight report has not arrived, so the figures on screen are still
+    // the world comparison's and must still say so.
+    expect(screen.getByText(/World Equities · TER/)).toBeInTheDocument();
+    expect(screen.queryByText(/US Large Cap · TER/)).not.toBeInTheDocument();
+
+    release(report({ comparison: comparison({ benchmark_key: "sp500" }) }));
+    await waitFor(() =>
+      expect(screen.getByText(/US Large Cap · TER/)).toBeInTheDocument(),
+    );
+  });
+});

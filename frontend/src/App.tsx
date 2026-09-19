@@ -50,6 +50,8 @@ export default function App() {
   // matching itself, so switching back to a method already seen is free.
   const agg = useMemo(() => aggregate(data, method), [data, method]);
 
+  // The set is static, so this is derived once rather than on every render.
+  const live = useMemo(() => liveTabs(), []);
   const def = tabDef(tab);
   const isLive = LEDGER_BACKED.has(tab);
 
@@ -103,19 +105,19 @@ export default function App() {
                 {/* Built from LEDGER_BACKED, never written out. The hand-written
                     version named three screens while five were live, and stayed
                     wrong for two milestones (PT-44). */}
-                {liveTabs().map((live, index, all) => (
-                  <Fragment key={live.id}>
+                {live.map((tab_, index, all) => (
+                  <Fragment key={tab_.id}>
                     {index > 0 && (index === all.length - 1 ? " and " : ", ")}
                     <button
                       type="button"
-                      onClick={() => setTab(live.id)}
+                      onClick={() => setTab(tab_.id)}
                       style={{ all: "unset", cursor: "pointer", color: c.accent }}
                     >
-                      {live.label}
+                      {tab_.label}
                     </button>
                   </Fragment>
                 ))}{" "}
-                {liveTabs().length === 1 ? "reads" : "read"} the live ledger.
+                {live.length === 1 ? "reads" : "read"} the live ledger.
               </span>
             </div>
           )}

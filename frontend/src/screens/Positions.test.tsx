@@ -11,7 +11,7 @@
  *  quietly reads zero, and whether a total that cannot be computed is withheld.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchPositions, fetchValuation } from "../api/client";
@@ -294,5 +294,111 @@ describe("the range control", () => {
 
     // The unpriceable day is outside the month; the strip must stop counting it.
     await waitFor(() => expect(screen.getByText(/0 unpriceable/)).toBeInTheDocument());
+  });
+});
+
+describe("provenance", () => {
+  it("reports the method the API said it used, not the one asked for", async () => {
+    serve(series(), positionsPage([position()], { method: "HIFO" }));
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText("HIFO")).toBeInTheDocument();
+  });
+
+  it("asks the API for the method it was given", async () => {
+    serve(series(), positionsPage([position()]));
+    render(<Positions method="LIFO" onOpenInstrument={() => {}} />);
+
+    await waitFor(() => expect(mockPositions).toHaveBeenCalledWith("LIFO"));
+  });
+
+  it("does not render a slow response under the method that replaced it", async () => {
+    let release: (page: PositionsPage) => void = () => {};
+    const slow = new Promise<PositionsPage>((resolve) => {
+      release = resolve;
+    });
+    mockValuation.mockResolvedValue(series());
+    mockPositions.mockImplementation((method) =>
+      method === "FIFO"
+        ? slow
+        : Promise.resolve(positionsPage([position({ product_name: "Hifo Holdings" })], { method: "HIFO" })),
+    );
+
+    const { rerender } = render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+    rerender(<Positions method="HIFO" onOpenInstrument={() => {}} />);
+    expect(await screen.findByText("HIFO")).toBeInTheDocument();
+
+    release(positionsPage([position({ product_name: "Fifo Holdings" })], { method: "FIFO" }));
+
+    await waitFor(() => expect(screen.getByText("HIFO")).toBeInTheDocument());
+    expect(screen.queryByText("Fifo Holdings")).not.toBeInTheDocument();
+  });
+});
+
+describe("what the screen says when there is nothing to show", () => {
+  it("distinguishes a dead API from an empty portfolio", async () => {
+    mockValuation.mockRejectedValue(new Error("500 Server Error"));
+    mockPositions.mockRejectedValue(new Error("500 Server Error"));
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText(/Could not reach the API/i)).toBeInTheDocument();
+  });
+
+  it("tells the reader to fetch prices when the cache is empty", async () => {
+    // An empty chart and an unfetched cache look identical. One is a fact about
+    // the portfolio and the other is a step nobody has run yet.
+    serve(series({ items: [], start: null, end: null }), positionsPage([]));
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText(/fetch-prices/i)).toBeInTheDocument();
+  });
+});
+
+describe("when one of the two fetches fails", () => {
+  /** Regression, found in review before merge. Splitting one effect into three
+   *  (PT-46) left them sharing a single `error` slot, and each cleared it on
+   *  its own success -- so whichever settled LAST won. A positions success
+   *  arriving after a valuation failure wiped the failure, and the screen sat
+   *  on "Loading…" for ever with nothing saying anything had gone wrong.
+   *
+   *  The ORDER is the whole test. Both mocks settling in one tick does not
+   *  reproduce it -- the first version of these tests passed against the bug.
+   *  The success has to land after the failure is already on screen, so the
+   *  slow half is held open deliberately and released once the notice is up.
+   */
+  it("still reports a valuation failure when the positions call then succeeds", async () => {
+    let release: (page: PositionsPage) => void = () => {};
+    mockValuation.mockRejectedValue(new Error("500 Server Error"));
+    mockPositions.mockImplementation(
+      () => new Promise<PositionsPage>((resolve) => { release = resolve; }),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText(/Could not reach the API/i)).toBeInTheDocument();
+
+    await act(async () => {
+      release(positionsPage([position()]));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Could not reach the API/i)).toBeInTheDocument();
+  });
+
+  it("still reports a positions failure when the valuation call then succeeds", async () => {
+    let release: (s: ValuationSeries) => void = () => {};
+    mockPositions.mockRejectedValue(new Error("500 Server Error"));
+    mockValuation.mockImplementation(
+      () => new Promise<ValuationSeries>((resolve) => { release = resolve; }),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText(/Could not reach the API/i)).toBeInTheDocument();
+
+    await act(async () => {
+      release(series());
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Could not reach the API/i)).toBeInTheDocument();
   });
 });

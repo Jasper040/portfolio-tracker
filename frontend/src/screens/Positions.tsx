@@ -109,7 +109,13 @@ export function Positions({ method, onOpenInstrument, refreshToken = 0 }: Positi
   // cannot be drawn under a control that has since moved on.
   const [fetched, setFetched] = useState<{ from: string; series: ValuationSeries } | null>(null);
   const [holdings, setHoldings] = useState<PositionsPage | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // One error slot per fetch, never one shared between them. They settle
+  // independently now (PT-46), so a single slot meant whichever finished LAST
+  // won: a positions success would clear a valuation failure, leaving `ledger`
+  // null, `pages` null, and the screen on "Loading…" for ever with nothing on
+  // screen saying anything had gone wrong. Found in review before merge.
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
   // A count, not a boolean: two independent fetches can be in flight at once
   // and a boolean would let the first to finish clear the second's indicator.
   const [inFlight, setInFlight] = useState(0);
@@ -128,11 +134,11 @@ export function Positions({ method, onOpenInstrument, refreshToken = 0 }: Positi
       .then((data) => {
         if (cancelled) return;
         setLedger(data);
-        setError(null);
+        setLedgerError(null);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setError(failure(cause));
+        setLedgerError(failure(cause));
       })
       // Unconditional: the increment happened whether or not this run is still
       // the current one, so the decrement has to as well.
@@ -162,11 +168,11 @@ export function Positions({ method, onOpenInstrument, refreshToken = 0 }: Positi
       .then((data) => {
         if (cancelled) return;
         setFetched({ from, series: data });
-        setError(null);
+        setLedgerError(null);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setError(failure(cause));
+        setLedgerError(failure(cause));
       })
       .finally(() => setInFlight((n) => n - 1));
 
@@ -185,11 +191,11 @@ export function Positions({ method, onOpenInstrument, refreshToken = 0 }: Positi
       .then((data) => {
         if (cancelled) return;
         setHoldings(data);
-        setError(null);
+        setHoldingsError(null);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setError(failure(cause));
+        setHoldingsError(failure(cause));
       })
       .finally(() => setInFlight((n) => n - 1));
 
@@ -208,7 +214,10 @@ export function Positions({ method, onOpenInstrument, refreshToken = 0 }: Positi
     [valuation],
   );
 
-  if (error) {
+  // Either failure is worth the notice; the first one found is reported, and
+  // neither can be cleared by the other's success.
+  const error = ledgerError ?? holdingsError;
+  if (error !== null) {
     return (
       <Notice tone="danger">
         Could not reach the API. {error}. Start it with{" "}

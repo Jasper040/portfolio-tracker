@@ -135,6 +135,14 @@ npm run dev
 
 Then open <http://localhost:5173>.
 
+> **The browser caches every API response for the session.** That is what makes
+> switching screens and ranges instant, and it means the page will not notice
+> an `import`, `fetch-prices` or `rebuild` you run in a terminal while it is
+> open. Press **↻ REFRESH** in the header afterwards — it clears the cache and
+> refetches. A reload does the same. Nothing expires on a timer, deliberately:
+> the app cannot see the ledger change, and guessing would be wrong in both
+> directions.
+
 > **Watch the port.** The API only accepts browser origins listed in
 > `CORS_ORIGINS` (default `http://localhost:5173`). If 5173 is already taken,
 > Vite silently falls back to 5174 and every API call fails CORS with a bare
@@ -306,7 +314,7 @@ of a CSV into a test or a comment, that is what will tell you.
 
 ```powershell
 cd frontend
-npm test             # 224 Vitest tests: lib/, api/ and the live-data screen components
+npm test             # 232 Vitest tests: lib/, api/ and the live-data screen components
 npm run test:watch   # same, in watch mode
 npm run typecheck    # tsc --noEmit, strict + noUncheckedIndexedAccess
 npm run build        # tsc -b && vite build -> dist/

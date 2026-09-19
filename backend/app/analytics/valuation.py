@@ -147,6 +147,7 @@ def value_series(
         window_end = end or last_cash
 
         cash_rows = session.execute(
+            # See `prices.price_history` for why this call is ignored.
             sa_select(CashDaily.cash_date, CashDaily.balance_base)  # type: ignore[call-overload]
             .where(CashDaily.cash_date >= window_start, CashDaily.cash_date <= window_end)
             .order_by(CashDaily.cash_date)

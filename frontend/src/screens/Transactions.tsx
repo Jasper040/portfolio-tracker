@@ -101,6 +101,11 @@ export function Transactions({ refreshToken = 0 }: TransactionsProps) {
 
   useEffect(() => {
     let cancelled = false;
+    // Cleared on every run, not only set on failure. The effect re-runs on
+    // refresh now, and without this a screen that once failed stayed on its
+    // error notice for ever -- pressing REFRESH after starting the API
+    // fetched successfully and still showed "Could not reach the API".
+    setError(null);
     fetchTransactions()
       .then((p) => {
         if (!cancelled) setPage(p);

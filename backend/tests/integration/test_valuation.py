@@ -291,7 +291,7 @@ class TestWindowedLoadsCarryIn:
             # WED deliberately has no quote of its own, so at least one day in
             # every window is valued by carry-forward. Without it this property
             # would hold even with the carry-in removed, and prove nothing.
-            if day is not WED:
+            if day != WED:
                 seed.priced(day, A, f"1{offset}.00")
 
         def shape(points):

@@ -205,11 +205,22 @@ export function Performance({ refreshToken = 0 }: PerformanceProps) {
     };
   }, [range, benchmarkKey, refreshToken]);
 
-  const activeBenchmark = benchmarks.find((b) => b.key === benchmarkKey) ?? null;
+  // Keyed off the REPORT's own benchmark, never the live control. The report
+  // on screen during a refetch is the previous one, and naming it after the
+  // newly-picked benchmark put one benchmark's figures under another's label --
+  // or a real excess under "No benchmark selected" when the reader cleared it.
+  // The same instinct as the MethodBadge reading `positions.method` rather than
+  // the prop: the response is the truth about what was computed.
+  const reportedBenchmark =
+    report?.comparison === null || report?.comparison === undefined
+      ? null
+      : (benchmarks.find((b) => b.key === report.comparison?.benchmark_key) ?? null);
   const option = useMemo(
     () =>
-      report ? performanceChartOption(report, { benchmarkLabel: activeBenchmark?.name ?? null }) : null,
-    [report, activeBenchmark],
+      report
+        ? performanceChartOption(report, { benchmarkLabel: reportedBenchmark?.name ?? null })
+        : null,
+    [report, reportedBenchmark],
   );
 
   if (error) {
@@ -237,7 +248,7 @@ export function Performance({ refreshToken = 0 }: PerformanceProps) {
   }
 
   const comparison = report.comparison;
-  const shownBenchmark = comparison !== null ? activeBenchmark : null;
+  const shownBenchmark = comparison !== null ? reportedBenchmark : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
