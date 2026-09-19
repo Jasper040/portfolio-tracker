@@ -1,9 +1,11 @@
 /** Application shell: navigation, the two pieces of state that cross screens, and
  *  the honesty banner.
  *
- *  Only three things live here. `tab` and `selectedIsin` are navigation. `method`
+ *  Only four things live here. `tab` and `selectedIsin` are navigation. `method`
  *  is here because it is genuinely global -- it changes what every realised figure
- *  in the app means, so it cannot belong to any one screen. Everything else
+ *  in the app means, so it cannot belong to any one screen. `refreshToken` is
+ *  global for the same reason: clearing the response cache invalidates every live
+ *  screen at once, not the one that happens to be open (PT-46). Everything else
  *  (periods, ranges, sorts, expanded rows, series toggles) is local to the screen
  *  that owns it, which is the main structural departure from the design's single
  *  state bag: that shape is what the dc-runtime template needed, not what React
@@ -11,6 +13,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { clearCache } from "./api/cache";
 import { Header } from "./components/layout/Header";
 import { Sidebar } from "./components/layout/Sidebar";
 import { ModelledBadge } from "./components/ui/Notice";
@@ -38,6 +41,9 @@ export default function App() {
   const [tab, setTab] = useState<TabId>("dash");
   const [method, setMethod] = useState<LotMethod>("FIFO");
   const [selectedIsin, setSelectedIsin] = useState<string>("NL0000000902");
+  // Incremented, never toggled: every live screen lists it in its effect
+  // dependencies, and a boolean would refetch only on alternate presses.
+  const [refreshToken, setRefreshToken] = useState(0);
 
   const data = useMemo(() => loadPortfolio(), []);
   // Re-derived only when the method changes. The provider memoises the lot
@@ -46,6 +52,13 @@ export default function App() {
 
   const def = tabDef(tab);
   const isLive = LEDGER_BACKED.has(tab);
+
+  // Order matters. Emptying the cache first means the refetch the token
+  // triggers cannot be answered out of the cache it was meant to discard.
+  const refresh = () => {
+    clearCache();
+    setRefreshToken((n) => n + 1);
+  };
 
   const openInstrument = (isin: string) => {
     setSelectedIsin(isin);
@@ -76,6 +89,7 @@ export default function App() {
           method={method}
           onMethodChange={setMethod}
           totalValue={eur(agg.totalValue, 0)}
+          onRefresh={refresh}
         />
 
         <div style={{ padding: "20px 24px 64px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -117,9 +131,15 @@ export default function App() {
           {tab === "dash" && (
             <Dashboard data={data} agg={agg} method={method} onOpenWhatIf={() => setTab("whatif")} />
           )}
-          {tab === "pos" && <Positions method={method} onOpenInstrument={openInstrument} />}
-          {tab === "tx" && <Transactions />}
-          {tab === "lots" && <Lots method={method} />}
+          {tab === "pos" && (
+            <Positions
+              method={method}
+              onOpenInstrument={openInstrument}
+              refreshToken={refreshToken}
+            />
+          )}
+          {tab === "tx" && <Transactions refreshToken={refreshToken} />}
+          {tab === "lots" && <Lots method={method} refreshToken={refreshToken} />}
           {tab === "detail" && (
             <StockDetail
               data={data}
@@ -129,11 +149,11 @@ export default function App() {
               onSelect={setSelectedIsin}
             />
           )}
-          {tab === "instr" && <Instrument />}
+          {tab === "instr" && <Instrument refreshToken={refreshToken} />}
           {tab === "whatif" && <WhatIf data={data} agg={agg} method={method} />}
           {tab === "div" && <Dividends data={data} agg={agg} />}
           {tab === "bm" && <Benchmarks data={data} agg={agg} />}
-          {tab === "perf" && <Performance />}
+          {tab === "perf" && <Performance refreshToken={refreshToken} />}
           {tab === "imp" && <ImportHealth asOf={shortDate(data.asOf)} />}
           {tab === "set" && <Settings data={data} method={method} />}
         </div>
