@@ -10,6 +10,13 @@ series must reproduce every position in `Portfolio.csv` on its last day, and the
 daily cash series must land on the broker's own cash line -- which is the harder
 of the two, because it is the sum of 785 rows across four currencies with 256
 internal transfers that look exactly like deposits and are not.
+
+PYTEST_DONT_REWRITE -- pytest's assertion rewriting prints both operands of a
+failing assert, and the operands here are derived from the gitignored export:
+identifiers, balances, dates, and model reprs that carry all three. That output
+reaches a terminal, and from there agent transcripts, pasted reports and issue
+comments. The marker turns the rewriting off, so a failure reports only what
+its own message says.
 """
 
 from __future__ import annotations

@@ -13,6 +13,13 @@ To run it for real:
     python -m app.cli fetch-prices
     python -m app.cli rebuild
     python -m pytest -q -m realdata
+
+PYTEST_DONT_REWRITE -- pytest's assertion rewriting prints both operands of a
+failing assert, and the operands here are derived from the gitignored export:
+identifiers, balances, dates, and model reprs that carry all three. That output
+reaches a terminal, and from there agent transcripts, pasted reports and issue
+comments. The marker turns the rewriting off, so a failure reports only what
+its own message says.
 """
 
 from __future__ import annotations

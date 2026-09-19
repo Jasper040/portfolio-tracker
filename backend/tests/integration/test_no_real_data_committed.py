@@ -26,6 +26,18 @@ Three kinds of thing are searched for, each for its own reason:
   threshold is what separates them without a hand-maintained allowlist that
   would rot. Small round values are deliberately not searched: a two-euro
   commission is attributable to nobody once the ISIN beside it is synthetic.
+
+PYTEST_DONT_REWRITE -- pytest's assertion rewriting prints both operands of a
+failing assert, and the operands here are derived from the gitignored export:
+identifiers, balances, dates, and model reprs that carry all three. That output
+reaches a terminal, and from there agent transcripts, pasted reports and issue
+comments. The marker turns the rewriting off, so a failure reports only what
+its own message says.
+
+This module keeps its explicit failure message, which names the leaked token and
+the file holding it, and that is deliberate: this test only fails when the value
+is ALREADY in a tracked file, so printing it reveals nothing the repository does
+not already contain -- and without it the operator cannot find what to remove.
 """
 
 from __future__ import annotations

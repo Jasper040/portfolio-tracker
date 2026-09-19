@@ -34,11 +34,11 @@ interface PreviewRow {
  *  eventually always contains. */
 const PREVIEW: readonly PreviewRow[] = [
   { status: "NEW", date: "02-09-26", instrument: "DELTA OPTICS Holding", qty: "2", price: "871,40", note: "" },
-  { status: "NEW", date: "28-08-26", instrument: "ING Groep", qty: "100", price: "22,10", note: "" },
+  { status: "NEW", date: "28-08-26", instrument: "Halcyon Bank NV", qty: "100", price: "22,10", note: "" },
   {
     status: "DUPLICATE",
     date: "14-05-24",
-    instrument: "ING Groep",
+    instrument: "Halcyon Bank NV",
     qty: "−150",
     price: "15,40",
     note: "matches order ing-2 in batch B1007",
@@ -46,7 +46,7 @@ const PREVIEW: readonly PreviewRow[] = [
   {
     status: "NEW",
     date: "15-08-26",
-    instrument: "Shell plc",
+    instrument: "Caldera Energy plc",
     qty: "—",
     price: "—",
     note: "dividend, gross € 96,40 / wh € 14,46",

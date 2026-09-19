@@ -14,6 +14,13 @@ only said it reproduces what somebody typed. See `realdata_subject`.
 
 Never runs in CI: the exports are gitignored, so these tests skip themselves when
 the directory is absent.
+
+PYTEST_DONT_REWRITE -- pytest's assertion rewriting prints both operands of a
+failing assert, and the operands here are derived from the gitignored export:
+identifiers, balances, dates, and model reprs that carry all three. That output
+reaches a terminal, and from there agent transcripts, pasted reports and issue
+comments. The marker turns the rewriting off, so a failure reports only what
+its own message says.
 """
 
 from __future__ import annotations

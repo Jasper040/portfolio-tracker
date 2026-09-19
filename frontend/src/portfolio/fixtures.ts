@@ -53,7 +53,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2019-04-02", "BUY", 12, 178, 3.9], ["2020-03-18", "BUY", 8, 215, 3.9], ["2022-10-11", "BUY", 6, 410, 3.9]],
   },
   {
-    isin: "NL0000000902", symbol: "BESI", name: "BE Semiconductor Industries",
+    isin: "NL0000000902", symbol: "LUMEN", name: "Lumen Semiconductors NV",
     sector: "Technology", industry: "Semiconductors", currency: "EUR",
     country: "NL", account: "Basic", volatility: 0.065,
     dividendYield: 0.022, dividendFrequency: 1, withholding: 0.15,
@@ -77,7 +77,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2021-11-15", "BUY", 2, 2580, 3.9], ["2022-06-20", "BUY", 2, 1690, 3.9]],
   },
   {
-    isin: "GB00BP6MXD84", symbol: "SHELL", name: "Shell plc",
+    isin: "GB0000000901", symbol: "CALDERA", name: "Caldera Energy plc",
     sector: "Energy", industry: "Oil & Gas", currency: "EUR",
     country: "NL", account: "Custody", volatility: 0.04,
     dividendYield: 0.038, dividendFrequency: 4, withholding: 0.15,
@@ -85,7 +85,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2021-01-12", "BUY", 200, 14.2, 2.6], ["2022-09-05", "BUY", 100, 23.8, 2.6]],
   },
   {
-    isin: "GB00B10RZP78", symbol: "UNA", name: "Unilever plc",
+    isin: "GB0000000902", symbol: "HEARTH", name: "Hearth Goods plc",
     sector: "Consumer Staples", industry: "Household Goods", currency: "EUR",
     country: "GB", account: "Custody", volatility: 0.03,
     dividendYield: 0.035, dividendFrequency: 4, withholding: 0,
@@ -101,7 +101,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2021-03-01", "BUY", 30, 95.4, 2.0], ["2022-06-01", "BUY", 25, 92.1, 2.0], ["2023-09-01", "BUY", 20, 104.6, 2.0], ["2025-01-01", "BUY", 15, 131.2, 2.0]],
   },
   {
-    isin: "NL0011821202", symbol: "INGA", name: "ING Groep",
+    isin: "NL0000000904", symbol: "HALCYON", name: "Halcyon Bank NV",
     sector: "Financials", industry: "Banks", currency: "EUR",
     country: "NL", account: "Basic", volatility: 0.045,
     dividendYield: 0.062, dividendFrequency: 2, withholding: 0.15,
@@ -109,7 +109,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2020-10-30", "BUY", 400, 6.15, 2.6], ["2024-05-14", "SELL", 150, 15.4, 2.6]],
   },
   {
-    isin: "NL0000235190", symbol: "AIR", name: "Airbus SE",
+    isin: "NL0000000905", symbol: "AEROSTRAT", name: "Aerostrat SE",
     sector: "Industrials", industry: "Aerospace", currency: "EUR",
     country: "FR", account: "Basic", volatility: 0.045,
     dividendYield: 0.018, dividendFrequency: 1, withholding: 0.128,
@@ -117,7 +117,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2022-03-08", "BUY", 25, 98.4, 2.6]],
   },
   {
-    isin: "NL0013654783", symbol: "PRX", name: "Prosus NV",
+    isin: "NL0000000906", symbol: "KESTREL", name: "Kestrel Holdings NV",
     sector: "Technology", industry: "Internet", currency: "EUR",
     country: "NL", account: "Basic", volatility: 0.06,
     dividendYield: 0.003, dividendFrequency: 1, withholding: 0.15,
@@ -125,7 +125,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2021-08-19", "BUY", 60, 78.5, 2.6]],
   },
   {
-    isin: "NL0012015705", symbol: "TKWY", name: "Just Eat Takeaway",
+    isin: "NL0000000907", symbol: "SWIFTBITE", name: "Swiftbite NV",
     sector: "Consumer Discretionary", industry: "Internet Retail", currency: "EUR",
     country: "NL", account: "Basic", volatility: 0.075,
     dividendYield: 0, dividendFrequency: 0, withholding: 0.15,
@@ -133,7 +133,7 @@ export const INSTRUMENTS: readonly FixtureInstrument[] = [
     transactions: [["2021-04-22", "BUY", 40, 72.4, 2.6], ["2022-11-30", "SELL", 40, 19.8, 2.6]],
   },
   {
-    isin: "DK0062498333", symbol: "NOVO", name: "Novo Nordisk B",
+    isin: "DK0000000901", symbol: "NORDPHARM", name: "Nordpharm A/S",
     sector: "Healthcare", industry: "Pharmaceuticals", currency: "EUR",
     country: "DK", account: "Basic", volatility: 0.05,
     dividendYield: 0.019, dividendFrequency: 1, withholding: 0.27,
@@ -163,7 +163,7 @@ export const BENCHMARKS: readonly FixtureBenchmark[] = [
     anchors: [["2019-01-01", 44.2], ["2020-03-20", 36.4], ["2021-12-01", 72.4], ["2022-10-01", 60.8], ["2024-06-01", 92.6], ["2026-09-04", 118.4]],
   },
   {
-    key: "MEUD", name: "Amundi Stoxx Europe 600", ticker: "MEUD.PA", ter: "0,07%",
+    key: "MEUD", name: "Broadstone Europe Large-Cap", ticker: "MEUD.PA", ter: "0,07%",
     color: "#6E7CE0", volatility: 0.026,
     anchors: [["2019-01-01", 148], ["2020-03-20", 108], ["2021-12-01", 196], ["2022-10-01", 168], ["2024-06-01", 234], ["2026-09-04", 262]],
   },
