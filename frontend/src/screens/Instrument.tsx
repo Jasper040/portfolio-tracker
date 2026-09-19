@@ -145,7 +145,14 @@ function ExcessCell({
   );
 }
 
-export function Instrument() {
+export interface InstrumentProps {
+  /** Bumped by the header's refresh control once it has cleared the response
+   *  cache, so the effects below re-run against an empty one. Optional and
+   *  defaulted, so a caller that never refreshes needs no change. */
+  refreshToken?: number;
+}
+
+export function Instrument({ refreshToken = 0 }: InstrumentProps) {
   const [range, setRange] = useState<Range>("1Y");
   const [benchmarkKey, setBenchmarkKey] = useState<string | null>(null);
   const [isin, setIsin] = useState<string | null>(null);
@@ -181,7 +188,7 @@ export function Instrument() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken]);
 
   // The benchmark list. Independent of everything the reader picks, so it is
   // fetched exactly once.
@@ -205,7 +212,7 @@ export function Instrument() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken]);
 
   // The chart itself. The cancellation guard matters here even more than on
   // Positions: switching instruments AND changing the range both restart this
@@ -232,7 +239,7 @@ export function Instrument() {
     return () => {
       cancelled = true;
     };
-  }, [isin, range, benchmarkKey]);
+  }, [isin, range, benchmarkKey, refreshToken]);
 
   const option = useMemo(
     () => (chart ? instrumentChartOption(chart, { showBenchmark: benchmarkKey !== null }) : null),

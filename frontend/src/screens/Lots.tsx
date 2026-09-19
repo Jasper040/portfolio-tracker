@@ -70,6 +70,10 @@ const CLOSURE_COLUMNS: readonly ColumnDef[] = [
 
 export interface LotsProps {
   method: LotMethodTag;
+  /** Bumped by the header's refresh control once it has cleared the response
+   *  cache, so the effects below re-run against an empty one. Optional and
+   *  defaulted, so a caller that never refreshes needs no change. */
+  refreshToken?: number;
 }
 
 /** Both pages, or neither. They are fetched together and rendered together, so
@@ -80,7 +84,7 @@ interface LedgerPages {
   closures: ClosurePage;
 }
 
-export function Lots({ method }: LotsProps) {
+export function Lots({ method, refreshToken = 0 }: LotsProps) {
   const [pages, setPages] = useState<LedgerPages | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -105,7 +109,7 @@ export function Lots({ method }: LotsProps) {
     return () => {
       cancelled = true;
     };
-  }, [method]);
+  }, [method, refreshToken]);
 
   if (loading) {
     return <div style={{ fontSize: 12, color: c.textMuted }}>Loading lots…</div>;
@@ -186,7 +190,7 @@ export function Lots({ method }: LotsProps) {
                     {decimal(lot.quantity)}
                   </Td>
                   <Td padding="8px 11px" align="right" numeric>
-                    {decimal(lot.price, 2, 4)}
+                    {decimal(lot.price, 2, 2)}
                   </Td>
                   <Td padding="8px 11px" align="right" numeric>
                     {decimalEur(lot.cost_basis)}
@@ -227,10 +231,10 @@ export function Lots({ method }: LotsProps) {
                     {decimal(closure.quantity)}
                   </Td>
                   <Td padding="8px 11px" align="right" numeric>
-                    {decimal(closure.open_price, 2, 4)}
+                    {decimal(closure.open_price, 2, 2)}
                   </Td>
                   <Td padding="8px 11px" align="right" numeric>
-                    {decimal(closure.close_price, 2, 4)}
+                    {decimal(closure.close_price, 2, 2)}
                   </Td>
                   <Td
                     padding="8px 11px"

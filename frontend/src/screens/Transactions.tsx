@@ -86,7 +86,14 @@ function flagsFor(txn: Transaction): Flag[] {
   return flags;
 }
 
-export function Transactions() {
+export interface TransactionsProps {
+  /** Bumped by the header's refresh control once it has cleared the response
+   *  cache, so the effects below re-run against an empty one. Optional and
+   *  defaulted, so a caller that never refreshes needs no change. */
+  refreshToken?: number;
+}
+
+export function Transactions({ refreshToken = 0 }: TransactionsProps) {
   const [page, setPage] = useState<TransactionPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -109,7 +116,7 @@ export function Transactions() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken]);
 
   if (loading) {
     return <div style={{ fontSize: 12, color: c.textMuted }}>Loading ledger…</div>;

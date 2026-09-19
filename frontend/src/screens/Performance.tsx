@@ -146,7 +146,14 @@ function ExcessCell({ row }: { row: RunExcess | null }) {
   return <span style={{ color: decimalSignColour(row.excess) }}>{decimalPercent(row.excess)}</span>;
 }
 
-export function Performance() {
+export interface PerformanceProps {
+  /** Bumped by the header's refresh control once it has cleared the response
+   *  cache, so both effects below re-run against an empty one. Optional and
+   *  defaulted, so a caller that never refreshes needs no change. */
+  refreshToken?: number;
+}
+
+export function Performance({ refreshToken = 0 }: PerformanceProps) {
   const [range, setRange] = useState<RangePreset>("MAX");
   const [benchmarkKey, setBenchmarkKey] = useState<string | null>(null);
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
@@ -155,7 +162,8 @@ export function Performance() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // The benchmark list does not depend on anything the reader picks.
+  // The benchmark list does not depend on anything the reader picks -- only on
+  // the operator saying the configuration may have changed underneath us.
   useEffect(() => {
     let cancelled = false;
     fetchBenchmarks()
@@ -173,7 +181,7 @@ export function Performance() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken]);
 
   // The cancellation guard: a slow MAX response landing after a fast 1Y one
   // would otherwise draw the whole ledger under a one-year control.
@@ -195,7 +203,7 @@ export function Performance() {
     return () => {
       cancelled = true;
     };
-  }, [range, benchmarkKey]);
+  }, [range, benchmarkKey, refreshToken]);
 
   const activeBenchmark = benchmarks.find((b) => b.key === benchmarkKey) ?? null;
   const option = useMemo(
@@ -214,7 +222,7 @@ export function Performance() {
     );
   }
 
-  if (loading || report === null || option === null) {
+  if (report === null || option === null) {
     return <div style={{ fontSize: 12, color: c.textFaint }}>Loading…</div>;
   }
 
@@ -238,7 +246,10 @@ export function Performance() {
             is always null: a time-weighted return ran no lot matching. */}
         <MethodBadge method={report.method} coverage={report.coverage} />
         {comparison && <BenchmarkSpanBadge span={comparison.span} />}
-        <div style={{ marginLeft: "auto" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {loading && (
+            <span style={{ fontSize: 10, color: c.textFaint, fontFamily: mono }}>UPDATING…</span>
+          )}
           <SegmentedControl options={RANGE_PRESETS} value={range} onChange={setRange} label="RANGE" size="sm" />
         </div>
       </div>
