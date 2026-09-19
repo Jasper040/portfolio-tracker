@@ -12,7 +12,7 @@
  *  wants.
  */
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { clearCache } from "./api/cache";
 import { Header } from "./components/layout/Header";
 import { Sidebar } from "./components/layout/Sidebar";
@@ -35,7 +35,7 @@ import { eur } from "./lib/format";
 import { shortDate } from "./lib/format";
 import type { LotMethod } from "./lib/lots";
 import { c } from "./lib/theme";
-import { LEDGER_BACKED, tabDef, type TabId } from "./navigation";
+import { LEDGER_BACKED, liveTabs, tabDef, type TabId } from "./navigation";
 
 export default function App() {
   const [tab, setTab] = useState<TabId>("dash");
@@ -100,30 +100,22 @@ export default function App() {
               <ModelledBadge />
               <span style={{ fontSize: 11, color: c.textFaint }}>
                 Prices, dividends and benchmarks are computed from a modelled dataset.{" "}
-                <button
-                  type="button"
-                  onClick={() => setTab("pos")}
-                  style={{ all: "unset", cursor: "pointer", color: c.accent }}
-                >
-                  Positions
-                </button>
-                ,{" "}
-                <button
-                  type="button"
-                  onClick={() => setTab("tx")}
-                  style={{ all: "unset", cursor: "pointer", color: c.accent }}
-                >
-                  Transactions
-                </button>{" "}
-                and{" "}
-                <button
-                  type="button"
-                  onClick={() => setTab("lots")}
-                  style={{ all: "unset", cursor: "pointer", color: c.accent }}
-                >
-                  Lots
-                </button>{" "}
-                read the live ledger.
+                {/* Built from LEDGER_BACKED, never written out. The hand-written
+                    version named three screens while five were live, and stayed
+                    wrong for two milestones (PT-44). */}
+                {liveTabs().map((live, index, all) => (
+                  <Fragment key={live.id}>
+                    {index > 0 && (index === all.length - 1 ? " and " : ", ")}
+                    <button
+                      type="button"
+                      onClick={() => setTab(live.id)}
+                      style={{ all: "unset", cursor: "pointer", color: c.accent }}
+                    >
+                      {live.label}
+                    </button>
+                  </Fragment>
+                ))}{" "}
+                {liveTabs().length === 1 ? "reads" : "read"} the live ledger.
               </span>
             </div>
           )}

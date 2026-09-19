@@ -85,3 +85,17 @@ export function tabDef(id: TabId): TabDef {
 /** The screens currently backed by a real endpoint. Everything else renders
  *  from `portfolio/provider.ts` and is badged MODELLED. */
 export const LEDGER_BACKED: ReadonlySet<TabId> = new Set<TabId>(["pos", "tx", "lots", "instr", "perf"]);
+
+/** Those same screens as definitions, in sidebar order.
+ *
+ *  Exists so the MODELLED banner can NAME them instead of carrying a
+ *  hand-written list. It carried one until PT-44: the sentence said Positions,
+ *  Transactions and Lots while `LEDGER_BACKED` had grown to include Instrument
+ *  (M3) and Performance (M6a), so the banner understated what was live by two
+ *  screens for two milestones. The badge never drifted, because the badge was
+ *  already derived. This makes the sentence derived too, which is the only fix
+ *  that cannot come undone the next time a screen goes live.
+ */
+export function liveTabs(): readonly TabDef[] {
+  return TABS.filter((tab) => LEDGER_BACKED.has(tab.id));
+}
