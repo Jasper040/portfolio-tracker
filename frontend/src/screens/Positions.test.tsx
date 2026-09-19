@@ -11,7 +11,7 @@
  *  quietly reads zero, and whether a total that cannot be computed is withheld.
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchPositions, fetchValuation } from "../api/client";
@@ -221,7 +221,33 @@ describe("the value chart and its coverage", () => {
 });
 
 describe("the range control", () => {
-  it("asks for five years back when the reader selects 5Y", async () => {
+  /** The operator's complaint and the fix for it. Narrowing happens in the
+   *  browser, so picking a preset is a `filter` over data already here rather
+   *  than a round trip -- as instant as dragging the chart's own zoom slider,
+   *  which is what made the difference obvious in the first place. */
+  it("does not touch the API for a window inside the series it holds", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    serve(
+      series({ items: [point({ date: "2020-01-02" }), point({ date: "2026-09-01" })], start: "2020-01-02", end: "2026-09-01" }),
+      positionsPage([position()]),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+    await screen.findByText("Example Holdings");
+    const before = mockValuation.mock.calls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: "1M" }));
+    await userEvent.click(screen.getByRole("button", { name: "1Y" }));
+    await userEvent.click(screen.getByRole("button", { name: "3M" }));
+
+    expect(mockValuation.mock.calls.length).toBe(before);
+  });
+
+  /** The case narrowing must refuse. `value_series` starts a whole-ledger
+   *  request at the first day a POSITION existed but floors a windowed one at
+   *  the first day a CASH ROW existed, and the response never reveals the
+   *  second -- so a window reaching back further may contain days we were never
+   *  sent. Asking is the only correct answer. */
+  it("asks the API for a window starting before the series it holds", async () => {
     const { default: userEvent } = await import("@testing-library/user-event");
     serve(series(), positionsPage([position()]));
     render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
@@ -236,11 +262,38 @@ describe("the range control", () => {
     );
   });
 
-  it("sends no start at all for MAX, so the server picks it", async () => {
+  it("fetches the whole ledger with no start, so the server picks it", async () => {
     serve(series(), positionsPage([position()]));
     render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
 
-    await waitFor(() => expect(mockValuation).toHaveBeenCalledWith({ from: null }));
+    await waitFor(() => expect(mockValuation).toHaveBeenCalledWith({}));
+  });
+
+  /** The narrowed envelope has to say what the API would have said, not what
+   *  the fetched one said. A window of fully-priced days inheriting a
+   *  `missing` from a day outside it is PT-14's mistake in the other
+   *  direction. */
+  it("recomputes the coverage strip over the narrowed window", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    serve(
+      series({
+        items: [
+          point({ date: "2020-01-02", coverage: "missing", value_base: null, holdings_base: null, covered_pct: null }),
+          point({ date: "2026-09-01" }),
+        ],
+        start: "2020-01-02",
+        end: "2026-09-01",
+        coverage: "missing",
+      }),
+      positionsPage([position()]),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+    await screen.findByText(/1 unpriceable/);
+
+    await userEvent.click(screen.getByRole("button", { name: "1M" }));
+
+    // The unpriceable day is outside the month; the strip must stop counting it.
+    await waitFor(() => expect(screen.getByText(/0 unpriceable/)).toBeInTheDocument());
   });
 });
 
@@ -298,5 +351,54 @@ describe("what the screen says when there is nothing to show", () => {
     render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
 
     expect(await screen.findByText(/fetch-prices/i)).toBeInTheDocument();
+  });
+});
+
+describe("when one of the two fetches fails", () => {
+  /** Regression, found in review before merge. Splitting one effect into three
+   *  (PT-46) left them sharing a single `error` slot, and each cleared it on
+   *  its own success -- so whichever settled LAST won. A positions success
+   *  arriving after a valuation failure wiped the failure, and the screen sat
+   *  on "Loading…" for ever with nothing saying anything had gone wrong.
+   *
+   *  The ORDER is the whole test. Both mocks settling in one tick does not
+   *  reproduce it -- the first version of these tests passed against the bug.
+   *  The success has to land after the failure is already on screen, so the
+   *  slow half is held open deliberately and released once the notice is up.
+   */
+  it("still reports a valuation failure when the positions call then succeeds", async () => {
+    let release: (page: PositionsPage) => void = () => {};
+    mockValuation.mockRejectedValue(new Error("500 Server Error"));
+    mockPositions.mockImplementation(
+      () => new Promise<PositionsPage>((resolve) => { release = resolve; }),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText(/Could not reach the API/i)).toBeInTheDocument();
+
+    await act(async () => {
+      release(positionsPage([position()]));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Could not reach the API/i)).toBeInTheDocument();
+  });
+
+  it("still reports a positions failure when the valuation call then succeeds", async () => {
+    let release: (s: ValuationSeries) => void = () => {};
+    mockPositions.mockRejectedValue(new Error("500 Server Error"));
+    mockValuation.mockImplementation(
+      () => new Promise<ValuationSeries>((resolve) => { release = resolve; }),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+
+    expect(await screen.findByText(/Could not reach the API/i)).toBeInTheDocument();
+
+    await act(async () => {
+      release(series());
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Could not reach the API/i)).toBeInTheDocument();
   });
 });

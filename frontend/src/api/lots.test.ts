@@ -1,6 +1,11 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchClosures, fetchLots } from "./client";
+import { clearCache } from "./cache";
 
+// The response cache is module-level state shared by every test in the
+// process. Without this, a case that reuses an earlier case's URL reads
+// that case's answer instead of its own stub (PT-46).
+beforeEach(() => clearCache());
 afterEach(() => vi.unstubAllGlobals());
 
 function stub(body: unknown) {

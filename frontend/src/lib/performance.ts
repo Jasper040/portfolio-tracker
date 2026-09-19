@@ -17,6 +17,7 @@
 import type { EChartsOption } from "echarts";
 
 import type { IndexPoint, PerformanceReport } from "../api/types";
+import { num, shortDate } from "./format";
 import { c } from "./theme";
 
 /** The portfolio line's legend name. */
@@ -53,6 +54,42 @@ const DIVIDEND_TREATMENT: Readonly<Record<string, string>> = {
  *  it arrived: a raw string is more debuggable than a confident wrong sentence. */
 export function dividendTreatment(code: string): string {
   return DIVIDEND_TREATMENT[code] ?? code;
+}
+
+/** The subset of an ECharts tooltip callback param this chart reads. Mirrors
+ *  `TooltipParam` in `lib/valuation.ts`; both are kept local for the reason
+ *  that file gives. */
+export interface TooltipParam {
+  axisValueLabel?: string;
+  seriesName?: string;
+  value?: unknown;
+}
+
+/** The performance chart's tooltip (PT-47).
+ *
+ *  ECharts' default formatter prints the raw float, and `indexOnDates` produces
+ *  one per day through `Number(point.index)` -- a rebased index carries as many
+ *  fraction digits as the division that made it. Two places is what a reader
+ *  can use.
+ *
+ *  No currency mark, unlike the value chart: both series here are INDICES at
+ *  100 on each run's first close, and a euro sign on one would be a claim about
+ *  what the number measures. `num` rather than `eur` is the whole difference.
+ */
+export function performanceTooltip(params: TooltipParam | readonly TooltipParam[]): string {
+  const rows = Array.isArray(params) ? params : [params as TooltipParam];
+  const first = rows[0];
+  if (first === undefined) return "";
+
+  const day = first.axisValueLabel ?? "";
+  const lines = rows.map((row) => {
+    const y = typeof row.value === "number" ? row.value : null;
+    // A gap has no index. "—" says so; a zero would read as a total loss, which
+    // is the claim M6a-7 and design doc 8.1 both rule out.
+    return `${row.seriesName ?? ""} ${y === null ? "—" : num(y)}`;
+  });
+
+  return [day ? shortDate(day) : "", ...lines].filter(Boolean).join("<br/>");
 }
 
 export interface PerformanceChartConfig {
@@ -108,7 +145,7 @@ export function performanceChartOption(
       splitLine: { lineStyle: { color: c.borderSoft } },
     },
     dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
-    tooltip: { trigger: "axis" },
+    tooltip: { trigger: "axis", formatter: performanceTooltip },
     series: [
       portfolioSeries,
       // Appended only when a comparison exists -- never pushed and hidden,

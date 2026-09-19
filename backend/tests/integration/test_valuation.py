@@ -245,6 +245,78 @@ class TestCarryForward:
         assert point.value_base is None
 
 
+class TestWindowedLoadsCarryIn:
+    """PT-49: the window is applied in SQL now, and the rows a window's first
+    days reach back to lie OUTSIDE it.
+
+    Carry-forward is what `partial` coverage means, so a plain
+    `price_date >= start` would not merely make a figure arrive sooner -- it
+    would turn a day the ledger CAN value into a `missing` one, and withhold a
+    total that was previously reported. These pin that the bound carries in the
+    last row before the window for prices and for rates alike.
+    """
+
+    def test_a_price_from_before_the_window_still_values_its_first_day(self, engine) -> None:
+        seed = Seed(engine).priced(MON, A, "10.00")  # the only quote, before the window
+        for day in (THU, FRI):
+            seed.held(day, A, "10").cash(day, "0.00")
+
+        series = value_series(engine, start=THU)
+
+        assert [p.on for p in series.points] == [THU, FRI]
+        assert [p.value_base for p in series.points] == [D("100.00"), D("100.00")]
+        assert MISSING not in [p.coverage for p in series.points]
+
+    def test_a_rate_from_before_the_window_still_converts_its_first_day(self, engine) -> None:
+        seed = Seed(engine).priced(MON, B, "10.00", currency="USD").rate(MON, "USD", "2.0")
+        for day in (THU, FRI):
+            seed.held(day, B, "10").cash(day, "0.00")
+
+        series = value_series(engine, start=THU)
+
+        # 10 x 10.00 USD at 2.0 per euro. Without the carried rate the holding
+        # is unconvertible and the day reports `missing` instead.
+        assert [p.value_base for p in series.points] == [D("50.00"), D("50.00")]
+        assert MISSING not in [p.coverage for p in series.points]
+
+    def test_a_window_says_exactly_what_the_whole_ledger_says_for_those_days(
+        self, engine
+    ) -> None:
+        """The general property, and the one worth keeping: bounding the loads
+        is an optimisation, so a window must be indistinguishable from the same
+        days of the unbounded answer -- coverage and covered_pct included."""
+        seed = Seed(engine)
+        for offset, day in enumerate((MON, TUE, WED, THU, FRI)):
+            seed.held(day, A, "10").cash(day, "-50.00")
+            # WED deliberately has no quote of its own, so at least one day in
+            # every window is valued by carry-forward. Without it this property
+            # would hold even with the carry-in removed, and prove nothing.
+            if day != WED:
+                seed.priced(day, A, f"1{offset}.00")
+
+        def shape(points):
+            return [
+                (p.on, p.holdings_base, p.cash_base, p.value_base, p.coverage, p.covered_pct)
+                for p in points
+            ]
+
+        whole = value_series(engine)
+        for first in (MON, TUE, WED, THU, FRI):
+            windowed = value_series(engine, start=first)
+            assert shape(windowed.points) == shape(
+                [p for p in whole.points if p.on >= first]
+            ), f"window from {first} disagrees with the whole ledger"
+
+    def test_a_stale_carried_price_still_reports_itself_as_stale(self, engine) -> None:
+        """The carry-in must not launder a price's age. MON to NEXT_MON is
+        seven days, past the four-day threshold, so the day is `partial`
+        whether or not the window starts after the quote."""
+        seed = Seed(engine).priced(MON, A, "10.00")
+        seed.held(NEXT_MON, A, "10").cash(NEXT_MON, "0.00")
+
+        assert value_series(engine, start=NEXT_MON).points[0].coverage == PARTIAL
+
+
 class TestCoverage:
     def test_full_when_every_holding_is_freshly_priced(self, engine) -> None:
         Seed(engine).held(MON, A, "10").cash(MON, "0.00").priced(MON, A, "20.00")

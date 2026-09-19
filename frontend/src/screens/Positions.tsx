@@ -50,6 +50,7 @@ import {
   rangeStart,
   type RangePreset,
 } from "../lib/valuation";
+import { sliceSeries } from "../lib/valuation-window";
 
 const COLUMNS: readonly ColumnDef[] = [
   { label: "INSTRUMENT" },
@@ -72,55 +73,151 @@ const COLUMNS: readonly ColumnDef[] = [
 export interface PositionsProps {
   method: LotMethodTag;
   onOpenInstrument: (isin: string) => void;
+  /** Bumped by the header's refresh control once it has cleared the response
+   *  cache, so both effects below re-run against an empty one. Optional and
+   *  defaulted, so a caller that never refreshes needs no change. */
+  refreshToken?: number;
 }
 
-/** Both responses, or neither. They are fetched together and rendered together,
- *  so "the chart arrived but the table did not" is unrepresentable rather than
- *  merely unlikely -- the same argument `Lots.tsx` makes about its two pages. */
+/** Both responses, or neither -- at RENDER time.
+ *
+ *  They used to be fetched together too, by one effect keyed on both controls.
+ *  That made "the chart arrived but the table did not" unrepresentable, but it
+ *  also meant changing the range refetched the positions table and changing the
+ *  method refetched a multi-year daily series, each to answer a question it does
+ *  not ask (PT-46). The two fetches are now independent and keyed on what they
+ *  actually depend on; the guarantee that mattered is kept by the render gate
+ *  below, which still refuses to draw a half-arrived screen.
+ */
 interface LivePages {
   series: ValuationSeries;
   positions: PositionsPage;
 }
 
-export function Positions({ method, onOpenInstrument }: PositionsProps) {
+function failure(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+export function Positions({ method, onOpenInstrument, refreshToken = 0 }: PositionsProps) {
   const [range, setRange] = useState<RangePreset>("MAX");
-  const [pages, setPages] = useState<LivePages | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // The whole-ledger series, fetched once. Every shorter window is narrowed
+  // out of it without touching the network -- see `lib/valuation-window.ts`
+  // for why that is sound and when it is refused.
+  const [ledger, setLedger] = useState<ValuationSeries | null>(null);
+  // The one case narrowing cannot answer: a window reaching back further than
+  // the series we hold. Kept with the window it belongs to, so a stale answer
+  // cannot be drawn under a control that has since moved on.
+  const [fetched, setFetched] = useState<{ from: string; series: ValuationSeries } | null>(null);
+  const [holdings, setHoldings] = useState<PositionsPage | null>(null);
+  // One error slot per fetch, never one shared between them. They settle
+  // independently now (PT-46), so a single slot meant whichever finished LAST
+  // won: a positions success would clear a valuation failure, leaving `ledger`
+  // null, `pages` null, and the screen on "Loading…" for ever with nothing on
+  // screen saying anything had gone wrong. Found in review before merge.
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [holdingsError, setHoldingsError] = useState<string | null>(null);
+  // A count, not a boolean: two independent fetches can be in flight at once
+  // and a boolean would let the first to finish clear the second's indicator.
+  const [inFlight, setInFlight] = useState(0);
 
+  // `new Date()` is read once per range change rather than on every render, so
+  // a re-render cannot silently shift the window by a day.
+  const from = useMemo(() => rangeStart(range, new Date()), [range]);
+
+  // The whole-ledger series does not depend on the range -- that is the entire
+  // point. `refreshToken` is not a parameter of the question either; it is the
+  // operator saying the answer may have changed under us.
   useEffect(() => {
-    // The cancellation guard. A slow FIFO response landing after a fast HIFO one
-    // would otherwise put FIFO's numbers under a HIFO badge.
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    Promise.all([
-      fetchValuation({ from: rangeStart(range, new Date()) }),
-      fetchPositions(method),
-    ])
-      .then(([series, positions]) => {
+    setInFlight((n) => n + 1);
+    fetchValuation({})
+      .then((data) => {
         if (cancelled) return;
-        setPages({ series, positions });
-        setLoading(false);
+        setLedger(data);
+        setLedgerError(null);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-        setLoading(false);
-      });
+        setLedgerError(failure(cause));
+      })
+      // Unconditional: the increment happened whether or not this run is still
+      // the current one, so the decrement has to as well.
+      .finally(() => setInFlight((n) => n - 1));
 
     return () => {
       cancelled = true;
     };
-  }, [method, range]);
+  }, [refreshToken]);
 
-  const option = useMemo(
-    () => buildValueOption(pages?.series.items ?? [], { label: "Portfolio value" }),
-    [pages],
+  // Synchronous, and that is the fix the operator asked for: picking a preset
+  // is now a `filter` over data already here, exactly like dragging the chart's
+  // own zoom slider, instead of a round trip.
+  const narrowed = useMemo(
+    () => (ledger === null ? null : sliceSeries(ledger, from)),
+    [ledger, from],
   );
 
-  if (error) {
+  // Only reached when narrowing refused -- a window starting before the series
+  // we hold, where the API knows something we cannot derive (that it clamped).
+  useEffect(() => {
+    if (ledger === null || narrowed !== null || from === null) return undefined;
+
+    let cancelled = false;
+    setInFlight((n) => n + 1);
+    fetchValuation({ from })
+      .then((data) => {
+        if (cancelled) return;
+        setFetched({ from, series: data });
+        setLedgerError(null);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setLedgerError(failure(cause));
+      })
+      .finally(() => setInFlight((n) => n - 1));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ledger, narrowed, from, refreshToken]);
+
+  const valuation = narrowed ?? (fetched !== null && fetched.from === from ? fetched.series : null);
+
+  // The positions table depends on the lot method and nothing else.
+  useEffect(() => {
+    let cancelled = false;
+    setInFlight((n) => n + 1);
+    fetchPositions(method)
+      .then((data) => {
+        if (cancelled) return;
+        setHoldings(data);
+        setHoldingsError(null);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setHoldingsError(failure(cause));
+      })
+      .finally(() => setInFlight((n) => n - 1));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [method, refreshToken]);
+
+  const pages: LivePages | null =
+    valuation !== null && holdings !== null
+      ? { series: valuation, positions: holdings }
+      : null;
+
+  const option = useMemo(
+    () => buildValueOption(valuation?.items ?? [], { label: "Portfolio value" }),
+    [valuation],
+  );
+
+  // Either failure is worth the notice; the first one found is reported, and
+  // neither can be cleared by the other's success.
+  const error = ledgerError ?? holdingsError;
+  if (error !== null) {
     return (
       <Notice tone="danger">
         Could not reach the API. {error}. Start it with{" "}
@@ -132,7 +229,7 @@ export function Positions({ method, onOpenInstrument }: PositionsProps) {
     );
   }
 
-  if (loading || pages === null) {
+  if (pages === null) {
     return <div style={{ fontSize: 12, color: c.textFaint }}>Loading…</div>;
   }
 
@@ -161,7 +258,16 @@ export function Positions({ method, onOpenInstrument }: PositionsProps) {
           {positions.items.length} open positions
           {positions.as_of ? ` · as of ${shortDate(positions.as_of)}` : ""}
         </span>
-        <div style={{ marginLeft: "auto" }}>
+        <div
+          style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}
+        >
+          {/* A refetch no longer blanks the screen, so without this the reader
+              has no way to tell a cached answer from one still on the wire. */}
+          {inFlight > 0 && (
+            <span style={{ fontSize: 10, color: c.textFaint, fontFamily: mono }}>
+              UPDATING…
+            </span>
+          )}
           <SegmentedControl
             options={RANGE_PRESETS}
             value={range}
@@ -238,7 +344,10 @@ export function Positions({ method, onOpenInstrument }: PositionsProps) {
                 <Td align="right" numeric color={c.textMuted}>
                   {decimalEur(row.cost_basis)}
                 </Td>
-                <Td align="right" numeric>{decimal(row.price, 2, 4)}</Td>
+                {/* Two places, like every other money cell (PT-47). QTY above
+                    stays at four: a share count is not currency, and a
+                    fractional holding is real. */}
+                <Td align="right" numeric>{decimal(row.price, 2, 2)}</Td>
                 <Td align="right" numeric color={c.textFaint}>
                   {row.price_date ? shortDate(row.price_date) : "—"}
                 </Td>

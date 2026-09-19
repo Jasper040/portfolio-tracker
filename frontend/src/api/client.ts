@@ -10,10 +10,38 @@ import type {
   TransactionPage,
   ValuationSeries,
 } from "./types";
+import { cached } from "./cache";
 
 // Falls back to the local dev API when VITE_API_BASE is not set, so the app keeps
 // working out of the box while still being deployable against a different backend.
 const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
+/** Every GET in this module, through the session cache (PT-46).
+ *
+ *  One function rather than eight copies of the same four lines, which also
+ *  means the cache cannot be wired into some endpoints and forgotten on others.
+ *  The key is the full URL: two requests that differ in any parameter are
+ *  different keys, and two that are identical are the same answer.
+ *
+ *  `label` survives because the error it produces is the one the reader sees on
+ *  a dead backend, and "Failed to load performance" is worth more there than a
+ *  generic message with a URL in it.
+ *
+ *  The caller receives the SAME object on a cache hit, not a copy. That is safe
+ *  here only because nothing in this app mutates a response -- see the
+ *  immutability rule in CLAUDE.md -- and it is the reason a screen must never
+ *  sort or splice an array it got from the client in place.
+ */
+async function getJson<T>(path: string, label: string): Promise<T> {
+  const url = `${BASE}${path}`;
+  return cached<T>(url, async () => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Failed to load ${label}: ${response.status} ${response.statusText}`);
+    }
+    return (await response.json()) as T;
+  });
+}
 
 export interface TransactionQuery {
   limit?: number;
@@ -30,11 +58,7 @@ export async function fetchTransactions(query: TransactionQuery = {}): Promise<T
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (isin) params.set("isin", isin);
 
-  const response = await fetch(`${BASE}/api/transactions?${params}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load transactions: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as TransactionPage;
+  return getJson<TransactionPage>(`/api/transactions?${params}`, "transactions");
 }
 
 export interface LotQuery {
@@ -52,11 +76,7 @@ async function getPage<T>(path: string, method: LotMethodTag, query: LotQuery): 
   });
   if (isin) params.set("isin", isin);
 
-  const response = await fetch(`${BASE}${path}?${params}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load ${path}: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as T;
+  return getJson<T>(`${path}?${params}`, path);
 }
 
 export function fetchLots(method: LotMethodTag, query: LotQuery = {}): Promise<LotPage> {
@@ -80,19 +100,11 @@ export async function fetchValuation(query: ValuationQuery = {}): Promise<Valuat
   if (query.to) params.set("to", query.to);
   const suffix = params.toString() ? `?${params}` : "";
 
-  const response = await fetch(`${BASE}/api/valuation${suffix}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load valuation: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as ValuationSeries;
+  return getJson<ValuationSeries>(`/api/valuation${suffix}`, "valuation");
 }
 
 export async function fetchPositions(method: LotMethodTag): Promise<PositionsPage> {
-  const response = await fetch(`${BASE}/api/positions?method=${method}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load positions: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as PositionsPage;
+  return getJson<PositionsPage>(`/api/positions?method=${method}`, "positions");
 }
 
 /** What `range` accepts on `GET /api/instruments/{isin}/chart` -- mirrors the
@@ -116,21 +128,14 @@ export async function fetchInstrumentChart(
   const params = new URLSearchParams({ range: opts.range });
   if (opts.benchmark) params.set("benchmark", opts.benchmark);
 
-  const response = await fetch(`${BASE}/api/instruments/${isin}/chart?${params}`);
-  if (!response.ok) {
-    throw new Error(
-      `Failed to load instrument chart: ${response.status} ${response.statusText}`,
-    );
-  }
-  return (await response.json()) as InstrumentChart;
+  return getJson<InstrumentChart>(
+    `/api/instruments/${isin}/chart?${params}`,
+    "instrument chart",
+  );
 }
 
 export async function fetchBenchmarks(): Promise<Benchmark[]> {
-  const response = await fetch(`${BASE}/api/benchmarks`);
-  if (!response.ok) {
-    throw new Error(`Failed to load benchmarks: ${response.status} ${response.statusText}`);
-  }
-  const body = (await response.json()) as { items: Benchmark[] };
+  const body = await getJson<{ items: Benchmark[] }>("/api/benchmarks", "benchmarks");
   return body.items;
 }
 
@@ -140,11 +145,7 @@ export async function fetchBenchmarks(): Promise<Benchmark[]> {
  *  "out of market" case M3 exists to show, and `/api/positions` cannot
  *  surface it. */
 export async function fetchInstruments(): Promise<InstrumentSummary[]> {
-  const response = await fetch(`${BASE}/api/instruments`);
-  if (!response.ok) {
-    throw new Error(`Failed to load instruments: ${response.status} ${response.statusText}`);
-  }
-  const body = (await response.json()) as { items: InstrumentSummary[] };
+  const body = await getJson<{ items: InstrumentSummary[] }>("/api/instruments", "instruments");
   return body.items;
 }
 
@@ -162,9 +163,5 @@ export async function fetchPerformance(query: PerformanceQuery): Promise<Perform
   if (query.benchmark) params.set("benchmark", query.benchmark);
   const suffix = params.toString() ? `?${params}` : "";
 
-  const response = await fetch(`${BASE}/api/performance${suffix}`);
-  if (!response.ok) {
-    throw new Error(`Failed to load performance: ${response.status} ${response.statusText}`);
-  }
-  return (await response.json()) as PerformanceReport;
+  return getJson<PerformanceReport>(`/api/performance${suffix}`, "performance");
 }

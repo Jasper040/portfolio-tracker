@@ -16,6 +16,7 @@
 import type { EChartsOption } from "echarts";
 
 import type { Coverage, ValuationPoint } from "../api/types";
+import { eur, shortDate } from "./format";
 import { c } from "./theme";
 
 export const RANGE_PRESETS = ["1M", "3M", "6M", "1Y", "2Y", "5Y", "MAX"] as const;
@@ -75,6 +76,75 @@ export function tallyCoverage(points: readonly ValuationPoint[]): CoverageTally 
 
 const BELOW_FULL: ReadonlySet<Coverage> = new Set<Coverage>(["partial", "manual"]);
 
+/** What the marker series is called, in the coverage strip's own words.
+ *
+ *  It read "Below full coverage" until PT-48, which is accurate and meant
+ *  nothing to the operator who hovered it. A `partial` day is one whose price
+ *  was carried forward from an earlier day; a `manual` day is one whose price
+ *  was typed in. "Stale or hand-supplied" is exactly how `CoverageStrip` names
+ *  those two, and having the chart and the sentence under it use one vocabulary
+ *  is the whole fix.
+ *
+ *  Exported so the tooltip and the tests name it from one place.
+ */
+export const BELOW_FULL_SERIES = "Stale or hand-supplied price";
+
+/** The subset of an ECharts tooltip callback param this app reads.
+ *
+ *  Declared locally rather than imported: ECharts types `value` as a broad
+ *  union that would need narrowing anyway, and the three fields below are all
+ *  a category-axis tooltip ever needs.
+ */
+export interface TooltipParam {
+  axisValueLabel?: string;
+  seriesName?: string;
+  /** A number for the line series, `[index, value]` for the scatter. */
+  value?: unknown;
+}
+
+/** A tooltip param's y, whichever shape the series stores.
+ *
+ *  The line holds `number | null` directly; the marker scatter holds
+ *  `[index, value]` because it is plotted against a category index. */
+function plottedY(value: unknown): number | null {
+  if (typeof value === "number") return value;
+  if (Array.isArray(value) && typeof value[1] === "number") return value[1];
+  return null;
+}
+
+/** The value chart's tooltip (PT-47, PT-48).
+ *
+ *  Two jobs. It rounds to the cent -- ECharts' default prints the raw float,
+ *  and a point is `quantity x price x fx_rate`, which reaches a dozen fraction
+ *  digits long before it reaches the screen. And it says what the coverage
+ *  marker means rather than repeating the line's own number underneath it,
+ *  which is what the marker was silently doing.
+ *
+ *  Formatting a float here does not undo what `decimal` protects. The chart's
+ *  data is already past `toPlotValue`, the one deliberate `Number()` boundary
+ *  in this file; this is a pixel-space value being labelled, not a ledger
+ *  figure being displayed. Every figure in the TABLE still goes through
+ *  `decimalEur` on the original string.
+ */
+export function valueTooltip(params: TooltipParam | readonly TooltipParam[]): string {
+  const rows = Array.isArray(params) ? params : [params as TooltipParam];
+  const first = rows[0];
+  if (first === undefined) return "";
+
+  const day = first.axisValueLabel ?? "";
+  const lines = rows.map((row) => {
+    // The marker sits on the same y as the line. Printing it again would read
+    // as a second measurement of the same day.
+    if (row.seriesName === BELOW_FULL_SERIES) return BELOW_FULL_SERIES;
+    const y = plottedY(row.value);
+    // An em dash, never "€ 0,00": design doc 8.1 forbids a zero that would read
+    // as a portfolio which lost everything.
+    return `${row.seriesName ?? ""} ${y === null ? "—" : eur(y)}`;
+  });
+
+  return [day ? shortDate(day) : "", ...lines].filter(Boolean).join("<br/>");
+}
+
 export interface ValueOptionConfig {
   label: string;
 }
@@ -118,7 +188,7 @@ export function buildValueOption(
     // Canvas plus dataZoom is why design doc 9.1 chose this library: a
     // five-year daily series is well past where SVG rendering degrades.
     dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
-    tooltip: { trigger: "axis" },
+    tooltip: { trigger: "axis", formatter: valueTooltip },
     series: [
       {
         name: config.label,
@@ -129,7 +199,7 @@ export function buildValueOption(
         lineStyle: { color: c.accent, width: 1.5 },
       },
       {
-        name: "Below full coverage",
+        name: BELOW_FULL_SERIES,
         type: "scatter",
         symbolSize: 5,
         data: marks,

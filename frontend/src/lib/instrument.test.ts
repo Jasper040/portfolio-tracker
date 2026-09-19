@@ -11,6 +11,7 @@ import type { Comparison, Interval, InstrumentChart, Marker, PricePoint } from "
 import {
   BENCHMARK_AXIS_NAME,
   instrumentChartOption,
+  instrumentTooltip,
   markerSymbolSize,
   toPlotValue,
 } from "./instrument";
@@ -348,5 +349,37 @@ describe("robustness", () => {
   it("survives a chart with no points, intervals or markers", () => {
     const c = chart({ points: [], intervals: [], markers: [] });
     expect(() => instrumentChartOption(c, { showBenchmark: false })).not.toThrow();
+  });
+});
+
+describe("the instrument chart tooltip", () => {
+  /** PT-47. `close_base` is a converted price, so its string carries the full
+   *  precision of price x fx_rate and ECharts' default printed all of it. */
+  it("rounds the price line to the cent", () => {
+    const html = instrumentTooltip(null)([
+      { axisValueLabel: "2025-03-04", seriesName: "NL0000000001", value: 49.987654321 },
+    ]);
+    expect(html).toContain("€ 49,99");
+    expect(html).not.toContain("49.9876");
+  });
+
+  /** The case the other two charts do not have: two series, two scales. A euro
+   *  sign on the rebased overlay would be a claim about what it measures. */
+  it("marks the price as money and the benchmark as an index", () => {
+    const html = instrumentTooltip("world")([
+      { axisValueLabel: "2025-03-04", seriesName: "NL0000000001", value: 49.99 },
+      { axisValueLabel: "2025-03-04", seriesName: "world", value: 103.456 },
+    ]);
+    expect(html).toContain("€ 49,99");
+    expect(html).toContain("world 103,46");
+    expect(html).not.toContain("€ 103");
+  });
+
+  it("shows a dash on a day it could not price", () => {
+    const html = instrumentTooltip(null)([
+      { axisValueLabel: "2025-03-05", seriesName: "NL0000000001", value: null },
+    ]);
+    expect(html).toContain("—");
+    expect(html).not.toContain("0,00");
   });
 });

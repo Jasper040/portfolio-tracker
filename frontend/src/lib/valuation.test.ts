@@ -15,7 +15,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   RANGE_PRESETS,
+  BELOW_FULL_SERIES,
   buildValueOption,
+  valueTooltip,
   positionWeight,
   rangeStart,
   tallyCoverage,
@@ -112,6 +114,72 @@ describe("the value chart option", () => {
   it("survives an empty series without throwing", () => {
     const option = buildValueOption([], { label: "Portfolio value" });
     expect((option.series as unknown[]).length).toBe(2);
+  });
+});
+
+describe("the value chart tooltip", () => {
+  /** PT-47. The chart data is already past `toPlotValue`, so a point is a float
+   *  whose string form carries every digit of `quantity x price x fx_rate`.
+   *  ECharts' default formatter prints all of them. */
+  it("rounds a value with more precision than a cent to two places", () => {
+    const html = valueTooltip([
+      { axisValueLabel: "2025-03-04", seriesName: "Portfolio value", value: 1234.5678901234 },
+    ]);
+    expect(html).toContain("€ 1.234,57");
+    expect(html).not.toContain("1234.5678");
+  });
+
+  it("names the day being hovered", () => {
+    const html = valueTooltip([
+      { axisValueLabel: "2025-03-04", seriesName: "Portfolio value", value: 250 },
+    ]);
+    expect(html).toContain("04-03-25");
+  });
+
+  /** PT-48. The marker series carries the same y as the line, so printing its
+   *  number twice is noise; what the reader needs is what the dot MEANS. */
+  it("explains the coverage marker instead of repeating its value", () => {
+    const html = valueTooltip([
+      { axisValueLabel: "2025-03-04", seriesName: "Portfolio value", value: 250 },
+      { axisValueLabel: "2025-03-04", seriesName: BELOW_FULL_SERIES, value: [1, 250] },
+    ]);
+    expect(html).toContain(BELOW_FULL_SERIES);
+    // The euro figure appears once, for the line, and not again for the dot.
+    expect(html.match(/€ 250,00/g)).toHaveLength(1);
+  });
+
+  it("says a day could not be valued rather than showing a zero", () => {
+    const html = valueTooltip([
+      { axisValueLabel: "2025-03-05", seriesName: "Portfolio value", value: null },
+    ]);
+    expect(html).toContain("—");
+    expect(html).not.toContain("0,00");
+  });
+
+  it("survives a single param object rather than an array", () => {
+    // ECharts passes an array for `trigger: "axis"`, but the type allows one.
+    const html = valueTooltip({
+      axisValueLabel: "2025-03-04",
+      seriesName: "Portfolio value",
+      value: 250,
+    });
+    expect(html).toContain("€ 250,00");
+  });
+});
+
+describe("the coverage marker's name", () => {
+  /** PT-48: the operator read "Below full coverage" and could not decode it.
+   *  The strip under the chart already says "stale" and "hand-supplied"; the
+   *  chart now uses the same two words. */
+  it("uses the coverage strip's vocabulary", () => {
+    expect(BELOW_FULL_SERIES.toLowerCase()).toContain("stale");
+    expect(BELOW_FULL_SERIES.toLowerCase()).toContain("hand-supplied");
+  });
+
+  it("is what the marker series is actually called", () => {
+    const option = buildValueOption([], { label: "Portfolio value" });
+    const marks = (option.series as Array<Record<string, unknown>>)[1]!;
+    expect(marks.name).toBe(BELOW_FULL_SERIES);
   });
 });
 

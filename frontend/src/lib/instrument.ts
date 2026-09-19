@@ -16,6 +16,7 @@
 import type { EChartsOption } from "echarts";
 
 import type { Comparison, IndexPoint, InstrumentChart, Marker } from "../api/types";
+import { eur, num, shortDate } from "./format";
 import { c } from "./theme";
 
 /** A money or index string to a chart coordinate. `null` stays `null` so the
@@ -149,6 +150,48 @@ function benchmarkSeries(comparison: Comparison, dates: readonly string[]) {
   };
 }
 
+/** The subset of an ECharts tooltip callback param this chart reads. Mirrors
+ *  the same interface in `lib/valuation.ts` and `lib/performance.ts`; each is
+ *  kept local so a file's chart contract is readable on its own. */
+export interface TooltipParam {
+  axisValueLabel?: string;
+  seriesName?: string;
+  value?: unknown;
+}
+
+/** This chart's tooltip (PT-47), which has a problem the other two do not.
+ *
+ *  Two series on two different scales: the price line is money in the base
+ *  currency, and the benchmark overlay is a rebased INDEX on its own axis. One
+ *  formatter therefore cannot pick a single unit -- the euro sign belongs on
+ *  one line and would be a false claim on the other. `benchmarkName` is what
+ *  lets it tell them apart, and it is passed in rather than guessed because the
+ *  price series is named after the instrument and the names are data.
+ *
+ *  Without any formatter at all, ECharts printed the raw float for both, which
+ *  for a `close_base` carrying a converted price meant a dozen fraction digits.
+ */
+export function instrumentTooltip(benchmarkName: string | null) {
+  return (params: TooltipParam | readonly TooltipParam[]): string => {
+    const rows = Array.isArray(params) ? params : [params as TooltipParam];
+    const first = rows[0];
+    if (first === undefined) return "";
+
+    const day = first.axisValueLabel ?? "";
+    const lines = rows.map((row) => {
+      const y = typeof row.value === "number" ? row.value : null;
+      // "—", never a zero: an unpriceable day is a gap in the line, and a zero
+      // there would claim the instrument went to nothing (design doc 8.1).
+      if (y === null) return `${row.seriesName ?? ""} —`;
+      const body =
+        benchmarkName !== null && row.seriesName === benchmarkName ? num(y) : eur(y);
+      return `${row.seriesName ?? ""} ${body}`;
+    });
+
+    return [day ? shortDate(day) : "", ...lines].filter(Boolean).join("<br/>");
+  };
+}
+
 export interface InstrumentChartConfig {
   showBenchmark: boolean;
 }
@@ -247,7 +290,7 @@ export function instrumentChartOption(
     // Canvas plus dataZoom for the same reason as the value chart: a
     // multi-year daily series is well past where SVG rendering degrades.
     dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
-    tooltip: { trigger: "axis" },
+    tooltip: { trigger: "axis", formatter: instrumentTooltip(benchmarkName) },
     series: [
       priceSeries,
       // Appended only when both a comparison exists AND the toggle is on --
