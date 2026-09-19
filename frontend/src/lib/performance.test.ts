@@ -11,6 +11,7 @@ import {
   indexOnDates,
   performanceChartOption,
   performanceDates,
+  performanceTooltip,
 } from "./performance";
 
 function link(date: string, dailyReturn: string | null = "0.01"): ReturnLink {
@@ -152,5 +153,54 @@ describe("dividend treatment", () => {
 
   it("shows a code it does not recognise exactly as it arrived", () => {
     expect(dividendTreatment("something_new")).toBe("something_new");
+  });
+});
+
+describe("the performance chart tooltip", () => {
+  /** PT-47. `indexOnDates` rebases through `Number(point.index)`, and a
+   *  division rarely lands on two places; ECharts' default prints every one. */
+  it("rounds a rebased index to two places", () => {
+    const html = performanceTooltip([
+      { axisValueLabel: "2025-09-08", seriesName: PORTFOLIO_SERIES, value: 103.45000000000002 },
+    ]);
+    expect(html).toContain("103,45");
+    expect(html).not.toContain("103.45000000000002");
+  });
+
+  /** Both series are indices at 100, not money. A euro sign here would be a
+   *  claim about what the number measures. */
+  it("carries no currency mark", () => {
+    const html = performanceTooltip([
+      { axisValueLabel: "2025-09-08", seriesName: PORTFOLIO_SERIES, value: 100 },
+    ]);
+    expect(html).not.toContain("€");
+  });
+
+  it("names both sides when a benchmark is drawn", () => {
+    const html = performanceTooltip([
+      { axisValueLabel: "2025-09-08", seriesName: PORTFOLIO_SERIES, value: 103.4 },
+      { axisValueLabel: "2025-09-08", seriesName: "World", value: 101.2 },
+    ]);
+    expect(html).toContain(PORTFOLIO_SERIES);
+    expect(html).toContain("World");
+    expect(html).toContain("103,40");
+    expect(html).toContain("101,20");
+  });
+
+  /** M6a-7 on the tooltip: a gap has no index, and a zero there would read as
+   *  a portfolio that lost everything. */
+  it("shows a dash across a gap rather than a zero", () => {
+    const html = performanceTooltip([
+      { axisValueLabel: "2025-09-08", seriesName: PORTFOLIO_SERIES, value: null },
+    ]);
+    expect(html).toContain("—");
+    expect(html).not.toContain("0,00");
+  });
+
+  it("names the day being hovered", () => {
+    const html = performanceTooltip([
+      { axisValueLabel: "2025-09-08", seriesName: PORTFOLIO_SERIES, value: 100 },
+    ]);
+    expect(html).toContain("08-09-25");
   });
 });
