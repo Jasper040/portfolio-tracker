@@ -18,38 +18,96 @@ reaching it came for.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlmodel import Session, select
+from sqlalchemy import select as sa_select
+from sqlmodel import Session
 
-from app.analytics.quotes import MISSING, Quote, classify, in_base
-from app.models.market import FxDaily, PriceDaily
+from app.analytics.quotes import MISSING, Quote, RatePoint, classify, in_base
+from app.models.market import PriceDaily
 from app.models.types import Coverage
 
 
-def price_history(session: Session) -> dict[str, list[PriceDaily]]:
-    history: dict[str, list[PriceDaily]] = {}
-    for row in session.exec(select(PriceDaily)).all():
-        history.setdefault(row.isin, []).append(row)
-    for rows in history.values():
-        rows.sort(key=lambda row: row.price_date)
+@dataclass(frozen=True, slots=True)
+class PricePoint:
+    """One cached close, as the four fields the lookups actually read.
+
+    Not a `PriceDaily`. Hydrating the ORM model was the whole remaining cost of
+    a valuation once the linear scans became binary searches: a full-ledger run
+    built 52,214 SQLModel instances, and merely parsing the UUID primary keys --
+    which nothing on this path ever looks at -- took longer than the SQL. A
+    frozen slotted dataclass carries the same four values with none of that.
+    """
+
+    price_date: date
+    close_unadjusted: Decimal
+    currency: str
+    source: str
+
+
+def price_history(session: Session) -> dict[str, list[PricePoint]]:
+    """Every cached close, grouped by ISIN and ascending by date.
+
+    Ordered in SQL rather than in Python. `price_daily` carries a UNIQUE
+    constraint on (isin, price_date), so the order is total and no tie-break is
+    left to chance -- which is what makes it safe to drop the stable Python sort
+    this replaced.
+    """
+    history: dict[str, list[PricePoint]] = {}
+    # `sa_select` rather than SQLModel's: the latter is overloaded for entities
+    # and a handful of columns, and a five-column projection matches none of
+    # them. This is the only place in the app that projects columns instead of
+    # loading a model, which is why it is also the only place that departs from
+    # `session.exec`.
+    # The ignore is an upstream typing gap, not a silenced error. SQLModel
+    # annotates a model attribute as its plain Python type rather than as
+    # `Mapped[...]`, so these arrive at `select` as `str`/`date`/`Decimal` --
+    # and `date` and `Decimal` are not among the scalar types its overloads
+    # accept. The query itself is ordinary SQLAlchemy Core and runs correctly;
+    # only the signature cannot describe it.
+    rows = session.execute(
+        sa_select(  # type: ignore[call-overload]
+            PriceDaily.isin,
+            PriceDaily.price_date,
+            PriceDaily.close_unadjusted,
+            PriceDaily.currency,
+            PriceDaily.source,
+        ).order_by(PriceDaily.isin, PriceDaily.price_date)
+    ).all()
+    for isin, price_date, close, currency, source in rows:
+        history.setdefault(isin, []).append(
+            PricePoint(price_date, close, currency, source)
+        )
     return history
 
 
-def _latest_on_or_before(rows: Sequence[PriceDaily], on: date) -> PriceDaily | None:
-    found: PriceDaily | None = None
-    for row in rows:
-        if row.price_date > on:
-            break  # sorted, so nothing later can qualify
-        found = row
-    return found
+def _latest_on_or_before(rows: Sequence[PricePoint], on: date) -> PricePoint | None:
+    """The last row dated on or before `on`, or `None` if the cache starts later.
+
+    Binary search, not a walk. `rows` is already sorted by `price_date`, and the
+    walk this replaced was the single most expensive thing the valuation did: it
+    ran once per holding per day, and every `row.price_date` in it was an
+    INSTRUMENTED SQLAlchemy attribute read rather than a plain field access.
+    Profiling a full-ledger valuation counted 8.4 million of them, 3.4 of the
+    3.6 seconds it took.
+
+    `bisect_right` touches about log2(n) rows instead of n -- eleven rather than
+    two thousand -- and the answer is identical by construction: it returns the
+    insertion point after every row whose key is <= `on`, so the row before it is
+    the last one that qualifies. Duplicate dates resolve the same way too, to the
+    last of them, because `bisect_right` goes past equal keys and the walk kept
+    overwriting `found`.
+    """
+    index = bisect_right(rows, on, key=lambda row: row.price_date)
+    return rows[index - 1] if index else None
 
 
 def quote_for(
-    isin: str, on: date, history: Mapping[str, list[PriceDaily]]
+    isin: str, on: date, history: Mapping[str, list[PricePoint]]
 ) -> Quote | None:
     row = _latest_on_or_before(history.get(isin, ()), on)
     if row is None:
@@ -89,8 +147,8 @@ def priced(
     quantity: Decimal,
     *,
     base: str,
-    history: Mapping[str, list[PriceDaily]],
-    rates: Mapping[tuple[str, str], list[FxDaily]],
+    history: Mapping[str, list[PricePoint]],
+    rates: Mapping[tuple[str, str], list[RatePoint]],
 ) -> Priced:
     """Price one holding on one day: quote, convert, and judge the staleness.
 

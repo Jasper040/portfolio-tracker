@@ -14,11 +14,13 @@ close its caller read, which is what lets `in_base` serve both sides.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import select as sa_select
 from sqlmodel import Session, select
 
 from app.models.ledger import Account
@@ -82,22 +84,40 @@ def base_currency(session: Session) -> str:
     return account.base_currency if account is not None else "EUR"
 
 
-def rate_history(session: Session) -> dict[tuple[str, str], list[FxDaily]]:
-    history: dict[tuple[str, str], list[FxDaily]] = {}
-    for row in session.exec(select(FxDaily)).all():
-        history.setdefault((row.from_ccy, row.to_ccy), []).append(row)
-    for rows in history.values():
-        rows.sort(key=lambda row: row.rate_date)
+@dataclass(frozen=True, slots=True)
+class RatePoint:
+    """One cached FX rate, as the two fields the lookups read. Not an `FxDaily`,
+    for the reason `prices.PricePoint` gives."""
+
+    rate_date: date
+    rate: Decimal
+
+
+def rate_history(session: Session) -> dict[tuple[str, str], list[RatePoint]]:
+    """Every cached rate, grouped by currency pair and ascending by date.
+
+    Ordered in SQL. `fx_daily` is UNIQUE on (from_ccy, to_ccy, rate_date), so
+    the order is total -- see `prices.price_history`."""
+    history: dict[tuple[str, str], list[RatePoint]] = {}
+    # `sa_select` for the reason `prices.price_history` gives.
+    # See `prices.price_history` for why this one call is ignored.
+    rows = session.execute(
+        sa_select(  # type: ignore[call-overload]
+            FxDaily.from_ccy, FxDaily.to_ccy, FxDaily.rate_date, FxDaily.rate).order_by(
+            FxDaily.from_ccy, FxDaily.to_ccy, FxDaily.rate_date
+        )
+    ).all()
+    for from_ccy, to_ccy, rate_date, rate in rows:
+        history.setdefault((from_ccy, to_ccy), []).append(RatePoint(rate_date, rate))
     return history
 
 
-def _latest_rate_on_or_before(rows: Sequence[FxDaily], on: date) -> FxDaily | None:
-    found: FxDaily | None = None
-    for row in rows:
-        if row.rate_date > on:
-            break
-        found = row
-    return found
+def _latest_rate_on_or_before(rows: Sequence[RatePoint], on: date) -> RatePoint | None:
+    """The last rate dated on or before `on`. Binary search, for the reason
+    `prices._latest_on_or_before` sets out -- same shape, same sorted input,
+    same identical answer including on duplicate dates."""
+    index = bisect_right(rows, on, key=lambda row: row.rate_date)
+    return rows[index - 1] if index else None
 
 
 def in_base(
@@ -105,7 +125,7 @@ def in_base(
     quantity: Decimal,
     on: date,
     base: str,
-    rates: Mapping[tuple[str, str], list[FxDaily]],
+    rates: Mapping[tuple[str, str], list[RatePoint]],
 ) -> tuple[Decimal, int] | None:
     """Value one holding in the base currency, plus the age of the older input.
 

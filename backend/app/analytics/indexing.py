@@ -29,8 +29,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.analytics.adjusted import TotalReturnPoint
-from app.analytics.quotes import STALE_DAYS, Quote, in_base
-from app.models.market import FxDaily
+from app.analytics.quotes import STALE_DAYS, Quote, RatePoint, in_base
 from app.models.types import SpanCoverage
 
 #: The span vocabulary's own constants. `quotes.py` exports `FULL`, `PARTIAL`
@@ -64,7 +63,7 @@ class BasePoint:
 def in_base_points(
     points: Sequence[TotalReturnPoint],
     base: str,
-    rates: Mapping[tuple[str, str], list[FxDaily]],
+    rates: Mapping[tuple[str, str], list[RatePoint]],
 ) -> tuple[tuple[BasePoint, ...], int]:
     """Convert every point to `base`. Always before `rebase`, never after (M3-7).
 

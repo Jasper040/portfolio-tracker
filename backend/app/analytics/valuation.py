@@ -54,17 +54,17 @@ from decimal import Decimal
 from sqlalchemy import Engine
 from sqlmodel import Session, select
 
-from app.analytics.prices import price_history, priced
+from app.analytics.prices import PricePoint, price_history, priced
 from app.analytics.quotes import (
     FULL,
     MISSING,
     PARTIAL,
+    RatePoint,
     base_currency,
     rate_history,
     worst_coverage,
 )
 from app.models.ledger import CashDaily, PositionDaily
-from app.models.market import FxDaily, PriceDaily
 from app.models.types import Coverage
 
 _ZERO = Decimal("0.00")
@@ -160,8 +160,8 @@ def _value_day(
     holdings: Sequence[PositionDaily],
     cash: Decimal,
     base: str,
-    prices: Mapping[str, list[PriceDaily]],
-    rates: Mapping[tuple[str, str], list[FxDaily]],
+    prices: Mapping[str, list[PricePoint]],
+    rates: Mapping[tuple[str, str], list[RatePoint]],
 ) -> ValuationPoint:
     total = _ZERO
     covered = _ZERO
