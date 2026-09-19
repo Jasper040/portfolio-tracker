@@ -51,7 +51,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, func
+from sqlalchemy import select as sa_select
 from sqlmodel import Session, select
 
 from app.analytics.prices import PricePoint, price_history, priced
@@ -115,34 +116,62 @@ def value_series(
     """
     with Session(engine) as session:
         base = base_currency(session)
-        cash_rows = sorted(session.exec(select(CashDaily)).all(), key=lambda r: r.cash_date)
-        position_rows = session.exec(select(PositionDaily)).all()
-        prices = price_history(session)
-        rates = rate_history(session)
 
-    if not cash_rows:
-        return ValuationSeries(
-            points=(), start=None, end=None, requested_from=start,
-            clamped=False, coverage=FULL, base_currency=base,
-        )
+        # The window is decided BEFORE anything is loaded, from three scalars,
+        # because every load below depends on it (PT-49). Previously the whole
+        # ledger was read and then filtered day by day, so a one-month request
+        # cost exactly what a full-ledger one did.
+        # One row, two bounds. Narrowing them together is also what tells the
+        # type checker the ledger is non-empty: an empty `cash_daily` gives
+        # `None` for both, and that is the only way either can be `None`.
+        floor, last_cash = session.execute(
+            sa_select(func.min(CashDaily.cash_date), func.max(CashDaily.cash_date))
+        ).one()
+        if floor is None or last_cash is None:
+            return ValuationSeries(
+                points=(), start=None, end=None, requested_from=start,
+                clamped=False, coverage=FULL, base_currency=base,
+            )
+        first_position = session.execute(
+            sa_select(func.min(PositionDaily.position_date))
+        ).scalar()
+
+        # `default_start` is the first day a POSITION existed and `floor` the
+        # first day a CASH ROW did. They are different days and the difference
+        # is deliberate: asked for everything, the series answers "my
+        # portfolio"; asked for a window, it answers as far back as the ledger
+        # goes. `frontend/src/lib/valuation-window.ts` refuses to narrow across
+        # that gap for exactly this reason.
+        default_start = first_position if first_position is not None else floor
+        window_start = max(start, floor) if start is not None else default_start
+        window_end = end or last_cash
+
+        cash_rows = session.execute(
+            sa_select(CashDaily.cash_date, CashDaily.balance_base)  # type: ignore[call-overload]
+            .where(CashDaily.cash_date >= window_start, CashDaily.cash_date <= window_end)
+            .order_by(CashDaily.cash_date)
+        ).all()
+        position_rows = session.exec(
+            select(PositionDaily).where(
+                PositionDaily.position_date >= window_start,
+                PositionDaily.position_date <= window_end,
+            )
+        ).all()
+        # Both carry in the last row BEFORE the window as well; see
+        # `prices.price_history` for why dropping it would change a day's
+        # coverage verdict rather than just its timing.
+        prices = price_history(session, start=window_start, end=window_end)
+        rates = rate_history(session, start=window_start, end=window_end)
 
     held: dict[date, list[PositionDaily]] = {}
     for row in position_rows:
         held.setdefault(row.position_date, []).append(row)
 
-    floor = cash_rows[0].cash_date
-    default_start = min(held) if held else floor
-    window_start = max(start, floor) if start is not None else default_start
-    window_end = end or cash_rows[-1].cash_date
-
-    points: list[ValuationPoint] = []
-    for cash_row in cash_rows:
-        day = cash_row.cash_date
-        if day < window_start or day > window_end:
-            continue
-        points.append(
-            _value_day(day, held.get(day, []), cash_row.balance_base, base, prices, rates)
-        )
+    # No date test in the loop: the query returned the window and nothing else.
+    points: list[ValuationPoint] = [
+        _value_day(day, held.get(day, []), balance, base, prices, rates)
+        for day, balance in cash_rows
+    ]
 
     return ValuationSeries(
         points=tuple(points),

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import and_, func
 from sqlalchemy import select as sa_select
 from sqlmodel import Session
 
@@ -49,34 +50,80 @@ class PricePoint:
     source: str
 
 
-def price_history(session: Session) -> dict[str, list[PricePoint]]:
-    """Every cached close, grouped by ISIN and ascending by date.
+def price_history(
+    session: Session, *, start: date | None = None, end: date | None = None
+) -> dict[str, list[PricePoint]]:
+    """Every cached close a window needs, grouped by ISIN and ascending by date.
 
     Ordered in SQL rather than in Python. `price_daily` carries a UNIQUE
     constraint on (isin, price_date), so the order is total and no tie-break is
     left to chance -- which is what makes it safe to drop the stable Python sort
     this replaced.
+
+    ## Bounding, and the row that must not be dropped
+
+    Unbounded, this reads the whole cache however narrow the window (PT-49): a
+    one-month valuation cost what a full-ledger one did.
+
+    Bounding the upper end is free, because nothing ever looks forward. Bounding
+    the lower end is not, and a plain `price_date >= start` would be WRONG. A
+    day with no quote of its own carries the last one forward -- that is exactly
+    what `partial` coverage means -- so the first days of a window routinely
+    depend on a row dated before it, and dropping that row would not merely slow
+    a figure down, it would change a day's verdict from `partial` to `missing`
+    and withhold a value the ledger can actually supply.
+
+    So the lower bound is "everything from `start`, plus the single latest row
+    before `start`, per instrument". The carry-in comes from its own grouped
+    query rather than a correlated subquery or a window function: one extra
+    round trip returning at most one row per instrument, and portable SQL.
     """
+    columns = (
+        PriceDaily.isin,
+        PriceDaily.price_date,
+        PriceDaily.close_unadjusted,
+        PriceDaily.currency,
+        PriceDaily.source,
+    )
     history: dict[str, list[PricePoint]] = {}
-    # `sa_select` rather than SQLModel's: the latter is overloaded for entities
-    # and a handful of columns, and a five-column projection matches none of
-    # them. This is the only place in the app that projects columns instead of
-    # loading a model, which is why it is also the only place that departs from
-    # `session.exec`.
+
+    # The carry-in first, so each instrument's list already begins with the row
+    # its first in-window day may need to reach back to.
+    if start is not None:
+        latest_before = (
+            sa_select(  # type: ignore[call-overload]
+                PriceDaily.isin, func.max(PriceDaily.price_date).label("on")
+            )
+            .where(PriceDaily.price_date < start)
+            .group_by(PriceDaily.isin)
+            .subquery()
+        )
+        carry = sa_select(*columns).join(  # type: ignore[call-overload]
+            latest_before,
+            and_(
+                PriceDaily.isin == latest_before.c.isin,
+                PriceDaily.price_date == latest_before.c.on,
+            ),
+        )
+        for isin, price_date, close, currency, source in session.execute(carry).all():
+            history.setdefault(isin, []).append(
+                PricePoint(price_date, close, currency, source)
+            )
+
     # The ignore is an upstream typing gap, not a silenced error. SQLModel
     # annotates a model attribute as its plain Python type rather than as
     # `Mapped[...]`, so these arrive at `select` as `str`/`date`/`Decimal` --
     # and `date` and `Decimal` are not among the scalar types its overloads
     # accept. The query itself is ordinary SQLAlchemy Core and runs correctly;
     # only the signature cannot describe it.
+    window = sa_select(*columns)  # type: ignore[call-overload]
+    if start is not None:
+        window = window.where(PriceDaily.price_date >= start)
+    if end is not None:
+        window = window.where(PriceDaily.price_date <= end)
+
     rows = session.execute(
-        sa_select(  # type: ignore[call-overload]
-            PriceDaily.isin,
-            PriceDaily.price_date,
-            PriceDaily.close_unadjusted,
-            PriceDaily.currency,
-            PriceDaily.source,
-        ).order_by(PriceDaily.isin, PriceDaily.price_date)
+        window.order_by(PriceDaily.isin, PriceDaily.price_date)
     ).all()
     for isin, price_date, close, currency, source in rows:
         history.setdefault(isin, []).append(

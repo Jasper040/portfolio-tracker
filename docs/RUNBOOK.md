@@ -264,7 +264,7 @@ the real export under `pytest -m realdata`.
 
 ```powershell
 cd backend
-python -m pytest                 # 726 tests. Excludes the realdata suite by default.
+python -m pytest                 # 730 tests. Excludes the realdata suite by default.
 python -m pytest -m realdata     # Opt-in: 66 tests against the gitignored real exports.
 python -m ruff check .           # Lint (E, F, I, B).
 python -m ruff format .          # Format. See the note below before running.
@@ -306,7 +306,7 @@ of a CSV into a test or a comment, that is what will tell you.
 
 ```powershell
 cd frontend
-npm test             # 215 Vitest tests: lib/, api/ and the live-data screen components
+npm test             # 224 Vitest tests: lib/, api/ and the live-data screen components
 npm run test:watch   # same, in watch mode
 npm run typecheck    # tsc --noEmit, strict + noUncheckedIndexedAccess
 npm run build        # tsc -b && vite build -> dist/

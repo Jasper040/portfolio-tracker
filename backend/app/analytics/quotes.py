@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import and_, func
 from sqlalchemy import select as sa_select
 from sqlmodel import Session, select
 
@@ -93,19 +94,50 @@ class RatePoint:
     rate: Decimal
 
 
-def rate_history(session: Session) -> dict[tuple[str, str], list[RatePoint]]:
-    """Every cached rate, grouped by currency pair and ascending by date.
+def rate_history(
+    session: Session, *, start: date | None = None, end: date | None = None
+) -> dict[tuple[str, str], list[RatePoint]]:
+    """Every cached rate a window needs, grouped by currency pair and ascending.
 
     Ordered in SQL. `fx_daily` is UNIQUE on (from_ccy, to_ccy, rate_date), so
-    the order is total -- see `prices.price_history`."""
+    the order is total -- see `prices.price_history`, which also explains why
+    the lower bound carries in the last row BEFORE the window rather than
+    starting flat at it. A rate is carried forward exactly as a price is, and
+    dropping the row a window's first day reaches back to would turn a
+    convertible holding into an unpriceable one.
+    """
+    columns = (FxDaily.from_ccy, FxDaily.to_ccy, FxDaily.rate_date, FxDaily.rate)
     history: dict[tuple[str, str], list[RatePoint]] = {}
-    # `sa_select` for the reason `prices.price_history` gives.
-    # See `prices.price_history` for why this one call is ignored.
-    rows = session.execute(
-        sa_select(  # type: ignore[call-overload]
-            FxDaily.from_ccy, FxDaily.to_ccy, FxDaily.rate_date, FxDaily.rate).order_by(
-            FxDaily.from_ccy, FxDaily.to_ccy, FxDaily.rate_date
+
+    if start is not None:
+        latest_before = (
+            sa_select(  # type: ignore[call-overload]
+                FxDaily.from_ccy, FxDaily.to_ccy, func.max(FxDaily.rate_date).label("on")
+            )
+            .where(FxDaily.rate_date < start)
+            .group_by(FxDaily.from_ccy, FxDaily.to_ccy)
+            .subquery()
         )
+        carry = sa_select(*columns).join(  # type: ignore[call-overload]
+            latest_before,
+            and_(
+                FxDaily.from_ccy == latest_before.c.from_ccy,
+                FxDaily.to_ccy == latest_before.c.to_ccy,
+                FxDaily.rate_date == latest_before.c.on,
+            ),
+        )
+        for from_ccy, to_ccy, rate_date, rate in session.execute(carry).all():
+            history.setdefault((from_ccy, to_ccy), []).append(RatePoint(rate_date, rate))
+
+    # See `prices.price_history` for why this one call is ignored.
+    window = sa_select(*columns)  # type: ignore[call-overload]
+    if start is not None:
+        window = window.where(FxDaily.rate_date >= start)
+    if end is not None:
+        window = window.where(FxDaily.rate_date <= end)
+
+    rows = session.execute(
+        window.order_by(FxDaily.from_ccy, FxDaily.to_ccy, FxDaily.rate_date)
     ).all()
     for from_ccy, to_ccy, rate_date, rate in rows:
         history.setdefault((from_ccy, to_ccy), []).append(RatePoint(rate_date, rate))
