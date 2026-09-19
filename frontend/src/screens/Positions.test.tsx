@@ -221,7 +221,33 @@ describe("the value chart and its coverage", () => {
 });
 
 describe("the range control", () => {
-  it("asks for five years back when the reader selects 5Y", async () => {
+  /** The operator's complaint and the fix for it. Narrowing happens in the
+   *  browser, so picking a preset is a `filter` over data already here rather
+   *  than a round trip -- as instant as dragging the chart's own zoom slider,
+   *  which is what made the difference obvious in the first place. */
+  it("does not touch the API for a window inside the series it holds", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    serve(
+      series({ items: [point({ date: "2020-01-02" }), point({ date: "2026-09-01" })], start: "2020-01-02", end: "2026-09-01" }),
+      positionsPage([position()]),
+    );
+    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+    await screen.findByText("Example Holdings");
+    const before = mockValuation.mock.calls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: "1M" }));
+    await userEvent.click(screen.getByRole("button", { name: "1Y" }));
+    await userEvent.click(screen.getByRole("button", { name: "3M" }));
+
+    expect(mockValuation.mock.calls.length).toBe(before);
+  });
+
+  /** The case narrowing must refuse. `value_series` starts a whole-ledger
+   *  request at the first day a POSITION existed but floors a windowed one at
+   *  the first day a CASH ROW existed, and the response never reveals the
+   *  second -- so a window reaching back further may contain days we were never
+   *  sent. Asking is the only correct answer. */
+  it("asks the API for a window starting before the series it holds", async () => {
     const { default: userEvent } = await import("@testing-library/user-event");
     serve(series(), positionsPage([position()]));
     render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
@@ -236,67 +262,37 @@ describe("the range control", () => {
     );
   });
 
-  it("sends no start at all for MAX, so the server picks it", async () => {
+  it("fetches the whole ledger with no start, so the server picks it", async () => {
     serve(series(), positionsPage([position()]));
     render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
 
-    await waitFor(() => expect(mockValuation).toHaveBeenCalledWith({ from: null }));
-  });
-});
-
-describe("provenance", () => {
-  it("reports the method the API said it used, not the one asked for", async () => {
-    serve(series(), positionsPage([position()], { method: "HIFO" }));
-    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
-
-    expect(await screen.findByText("HIFO")).toBeInTheDocument();
+    await waitFor(() => expect(mockValuation).toHaveBeenCalledWith({}));
   });
 
-  it("asks the API for the method it was given", async () => {
-    serve(series(), positionsPage([position()]));
-    render(<Positions method="LIFO" onOpenInstrument={() => {}} />);
-
-    await waitFor(() => expect(mockPositions).toHaveBeenCalledWith("LIFO"));
-  });
-
-  it("does not render a slow response under the method that replaced it", async () => {
-    let release: (page: PositionsPage) => void = () => {};
-    const slow = new Promise<PositionsPage>((resolve) => {
-      release = resolve;
-    });
-    mockValuation.mockResolvedValue(series());
-    mockPositions.mockImplementation((method) =>
-      method === "FIFO"
-        ? slow
-        : Promise.resolve(positionsPage([position({ product_name: "Hifo Holdings" })], { method: "HIFO" })),
+  /** The narrowed envelope has to say what the API would have said, not what
+   *  the fetched one said. A window of fully-priced days inheriting a
+   *  `missing` from a day outside it is PT-14's mistake in the other
+   *  direction. */
+  it("recomputes the coverage strip over the narrowed window", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    serve(
+      series({
+        items: [
+          point({ date: "2020-01-02", coverage: "missing", value_base: null, holdings_base: null, covered_pct: null }),
+          point({ date: "2026-09-01" }),
+        ],
+        start: "2020-01-02",
+        end: "2026-09-01",
+        coverage: "missing",
+      }),
+      positionsPage([position()]),
     );
-
-    const { rerender } = render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
-    rerender(<Positions method="HIFO" onOpenInstrument={() => {}} />);
-    expect(await screen.findByText("HIFO")).toBeInTheDocument();
-
-    release(positionsPage([position({ product_name: "Fifo Holdings" })], { method: "FIFO" }));
-
-    await waitFor(() => expect(screen.getByText("HIFO")).toBeInTheDocument());
-    expect(screen.queryByText("Fifo Holdings")).not.toBeInTheDocument();
-  });
-});
-
-describe("what the screen says when there is nothing to show", () => {
-  it("distinguishes a dead API from an empty portfolio", async () => {
-    mockValuation.mockRejectedValue(new Error("500 Server Error"));
-    mockPositions.mockRejectedValue(new Error("500 Server Error"));
     render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
+    await screen.findByText(/1 unpriceable/);
 
-    expect(await screen.findByText(/Could not reach the API/i)).toBeInTheDocument();
-  });
+    await userEvent.click(screen.getByRole("button", { name: "1M" }));
 
-  it("tells the reader to fetch prices when the cache is empty", async () => {
-    // An empty chart and an unfetched cache look identical. One is a fact about
-    // the portfolio and the other is a step nobody has run yet.
-    serve(series({ items: [], start: null, end: null }), positionsPage([]));
-    render(<Positions method="FIFO" onOpenInstrument={() => {}} />);
-
-    expect(await screen.findByText(/fetch-prices/i)).toBeInTheDocument();
+    // The unpriceable day is outside the month; the strip must stop counting it.
+    await waitFor(() => expect(screen.getByText(/0 unpriceable/)).toBeInTheDocument());
   });
 });

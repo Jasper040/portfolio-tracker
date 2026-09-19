@@ -50,6 +50,7 @@ import {
   rangeStart,
   type RangePreset,
 } from "../lib/valuation";
+import { sliceSeries } from "../lib/valuation-window";
 
 const COLUMNS: readonly ColumnDef[] = [
   { label: "INSTRUMENT" },
@@ -99,25 +100,34 @@ function failure(cause: unknown): string {
 
 export function Positions({ method, onOpenInstrument, refreshToken = 0 }: PositionsProps) {
   const [range, setRange] = useState<RangePreset>("MAX");
-  const [valuation, setValuation] = useState<ValuationSeries | null>(null);
+  // The whole-ledger series, fetched once. Every shorter window is narrowed
+  // out of it without touching the network -- see `lib/valuation-window.ts`
+  // for why that is sound and when it is refused.
+  const [ledger, setLedger] = useState<ValuationSeries | null>(null);
+  // The one case narrowing cannot answer: a window reaching back further than
+  // the series we hold. Kept with the window it belongs to, so a stale answer
+  // cannot be drawn under a control that has since moved on.
+  const [fetched, setFetched] = useState<{ from: string; series: ValuationSeries } | null>(null);
   const [holdings, setHoldings] = useState<PositionsPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A count, not a boolean: two independent fetches can be in flight at once
   // and a boolean would let the first to finish clear the second's indicator.
   const [inFlight, setInFlight] = useState(0);
 
-  // The valuation series depends on the range and nothing else. `refreshToken`
-  // is not a parameter of the question -- it is the operator saying the answer
-  // may have changed under us, after clearing the cache from the header.
+  // `new Date()` is read once per range change rather than on every render, so
+  // a re-render cannot silently shift the window by a day.
+  const from = useMemo(() => rangeStart(range, new Date()), [range]);
+
+  // The whole-ledger series does not depend on the range -- that is the entire
+  // point. `refreshToken` is not a parameter of the question either; it is the
+  // operator saying the answer may have changed under us.
   useEffect(() => {
-    // The cancellation guard. A slow MAX response landing after a fast 1M one
-    // would otherwise draw the whole ledger under a one-month control.
     let cancelled = false;
     setInFlight((n) => n + 1);
-    fetchValuation({ from: rangeStart(range, new Date()) })
+    fetchValuation({})
       .then((data) => {
         if (cancelled) return;
-        setValuation(data);
+        setLedger(data);
         setError(null);
       })
       .catch((cause: unknown) => {
@@ -131,7 +141,41 @@ export function Positions({ method, onOpenInstrument, refreshToken = 0 }: Positi
     return () => {
       cancelled = true;
     };
-  }, [range, refreshToken]);
+  }, [refreshToken]);
+
+  // Synchronous, and that is the fix the operator asked for: picking a preset
+  // is now a `filter` over data already here, exactly like dragging the chart's
+  // own zoom slider, instead of a round trip.
+  const narrowed = useMemo(
+    () => (ledger === null ? null : sliceSeries(ledger, from)),
+    [ledger, from],
+  );
+
+  // Only reached when narrowing refused -- a window starting before the series
+  // we hold, where the API knows something we cannot derive (that it clamped).
+  useEffect(() => {
+    if (ledger === null || narrowed !== null || from === null) return undefined;
+
+    let cancelled = false;
+    setInFlight((n) => n + 1);
+    fetchValuation({ from })
+      .then((data) => {
+        if (cancelled) return;
+        setFetched({ from, series: data });
+        setError(null);
+      })
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        setError(failure(cause));
+      })
+      .finally(() => setInFlight((n) => n - 1));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ledger, narrowed, from, refreshToken]);
+
+  const valuation = narrowed ?? (fetched !== null && fetched.from === from ? fetched.series : null);
 
   // The positions table depends on the lot method and nothing else.
   useEffect(() => {
