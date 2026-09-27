@@ -1,8 +1,7 @@
 # Runbook
 
 Every command needed to run, test and maintain the project locally. Commands are
-written for PowerShell; the `bash` equivalents differ only in how environment
-variables are set.
+written for zsh on macOS; any POSIX shell runs them unchanged.
 
 Two working directories matter and they are not interchangeable:
 
@@ -17,7 +16,7 @@ Two working directories matter and they are not interchangeable:
 
 ### Backend
 
-```powershell
+```sh
 cd backend
 
 # uv reads .python-version (3.14) and uv.lock, builds backend/.venv, and installs
@@ -26,12 +25,17 @@ uv sync --extra dev
 
 # The SQLite directory must exist first. SQLite does NOT create a missing
 # directory — it fails with "unable to open database file".
-New-Item -ItemType Directory -Force data
+mkdir -p data
 
 # Settings are read from a .env in the CURRENT directory, so this file belongs
 # in backend/, not at the repo root. `database_url` has no default: a missing
 # value fails at startup rather than silently opening a second, wrong ledger.
-Copy-Item ..\.env.example .env
+cp ../.env.example .env
+
+# Every `python -m ...` command in sections 3 and 4 assumes this venv is active.
+# macOS has no bare `python` outside one — only `python3`, which has none of the
+# project's packages. Prefixing a command with `uv run` works without activating.
+source .venv/bin/activate
 ```
 
 `uv.lock` is committed on purpose. It pins all 50 packages, transitive ones
@@ -85,21 +89,40 @@ CORS_ORIGINS=http://localhost:5173
 > a broken backend rather than as the wrong environment. Check which one is active
 > before debugging anything else:
 >
-> ```powershell
-> python -c "import sys; print(sys.prefix)"   # must end in \backend\.venv
+> ```sh
+> python -c "import sys; print(sys.prefix)"   # must end in /backend/.venv
 > ```
 >
 > A deleted venv can outlive itself: `VIRTUAL_ENV` stays set in any shell that
-> had activated it, and tools keep honouring the stale path. If `$env:VIRTUAL_ENV`
+> had activated it, and tools keep honouring the stale path. If `$VIRTUAL_ENV`
 > names a directory that no longer exists, open a new terminal — nothing in that
 > one will resolve correctly.
+>
+> A venv is also tied to the machine that built it. One copied from another OS
+> (a `Scripts\` folder instead of `bin/`, or a `home = C:\...` line in
+> `pyvenv.cfg`) cannot run here; `uv sync --extra dev` detects that and rebuilds
+> it from `uv.lock`.
 
 ### Frontend
 
-```powershell
+```sh
 cd frontend
-npm install
+node --version   # must satisfy "engines" in package.json; frontend/.nvmrc names 26
+npm ci
 ```
+
+**The Node version is not a suggestion.** jsdom and vitest require Node
+`^22.22.2 || ^24.15.0 || >=26`. On an older Node, `npm test` still prints a pass
+count — but the four `screens/*.test.tsx` files crash before running
+(`webidl.util.markAsUncloneable is not a function`), and a vitest summary counts
+a file that never started as neither passed nor failed. `frontend/.npmrc` sets
+`engine-strict`, so `npm ci` refuses a wrong Node instead of installing onto it.
+With Homebrew, `brew install node` is current; `fnm use` or `nvm use` in
+`frontend/` reads `.nvmrc`.
+
+`npm ci` installs exactly what `package-lock.json` pins. `node_modules` holds
+per-platform native binaries (`@esbuild/darwin-arm64`, `@rollup/rollup-darwin-arm64`),
+so one copied from another OS will not run — `npm ci` deletes and replaces it.
 
 That installs the component-test environment along with everything else:
 `jsdom`, `@testing-library/react` and `@testing-library/jest-dom`. No separate
@@ -114,7 +137,7 @@ mount and will show its error state if the API is not up.
 
 **Terminal 1 — API on :8000**
 
-```powershell
+```sh
 cd backend
 uv run uvicorn app.main:create_app --factory --reload --port 8000
 ```
@@ -128,7 +151,7 @@ on its own, so omitting `--factory` still works — it just warns. Pass it anywa
 
 **Terminal 2 — UI on :5173**
 
-```powershell
+```sh
 cd frontend
 npm run dev
 ```
@@ -156,7 +179,7 @@ Then open <http://localhost:5173>.
 
 ### Health check
 
-```powershell
+```sh
 curl http://localhost:8000/api/health          # {"status":"ok"}
 curl "http://localhost:8000/api/transactions?limit=5"
 ```
@@ -168,9 +191,9 @@ curl "http://localhost:8000/api/transactions?limit=5"
 The ledger starts empty and the UI says so. Import a DeGiro export **directory** —
 both `Transactions.csv` and `Account.csv` are required:
 
-```powershell
+```sh
 cd backend
-python -m app.cli import ..\degiro-export
+python -m app.cli import ../degiro-export
 # batch 4bfe79f8-...: parsed 428, inserted 428, skipped 0
 ```
 
@@ -189,7 +212,7 @@ happened. So the import stops and asks (design doc Sec 6.3):
 
 ```
 2 corporate action(s) must be answered before this export imports.
-Nothing was written. Add each key to ...\config\corporate_actions.yaml and run this again.
+Nothing was written. Add each key to .../config/corporate_actions.yaml and run this again.
 
   US0000000901:2025-02-18:910.40
       kind:   SPLIT
@@ -206,8 +229,8 @@ Copy the `resolutions:` block it prints into `config/corporate_actions.yaml` —
 not retype the keys, a mistyped one parses cleanly and applies to nothing. Then run
 the import again.
 
-```powershell
-Copy-Item ..\config\corporate_actions.example.yaml ..\config\corporate_actions.yaml
+```sh
+cp ../config/corporate_actions.example.yaml ../config/corporate_actions.yaml
 ```
 
 `config/corporate_actions.yaml` is gitignored: a key names an instrument, a date
@@ -236,11 +259,11 @@ To try the app without touching real data, point it at the synthetic golden file
 same shape and quirks, invented amounts. They live in `backend/tests/golden/` under
 their test names, so copy them into a directory first:
 
-```powershell
-New-Item -ItemType Directory -Force ..\.scratch\golden-export
-Copy-Item tests\golden\degiro_transactions_golden.csv ..\.scratch\golden-export\Transactions.csv
-Copy-Item tests\golden\degiro_account_golden.csv ..\.scratch\golden-export\Account.csv
-python -m app.cli import ..\.scratch\golden-export --resolutions ..\config\corporate_actions.example.yaml
+```sh
+mkdir -p ../.scratch/golden-export
+cp tests/golden/degiro_transactions_golden.csv ../.scratch/golden-export/Transactions.csv
+cp tests/golden/degiro_account_golden.csv ../.scratch/golden-export/Account.csv
+python -m app.cli import ../.scratch/golden-export --resolutions ../config/corporate_actions.example.yaml
 # batch 6e6605e7-...: parsed 30, inserted 30, skipped 0
 ```
 
@@ -270,7 +293,7 @@ the real export under `pytest -m realdata`.
 
 ### Backend
 
-```powershell
+```sh
 cd backend
 python -m pytest                 # 730 tests. Excludes the realdata suite by default.
 python -m pytest -m realdata     # Opt-in: 66 tests against the gitignored real exports.
@@ -312,7 +335,7 @@ of a CSV into a test or a comment, that is what will tell you.
 
 ### Frontend
 
-```powershell
+```sh
 cd frontend
 npm test             # 232 Vitest tests: lib/, api/ and the live-data screen components
 npm run test:watch   # same, in watch mode
@@ -421,20 +444,22 @@ pulling, or the return is computed from a stale cash series.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Could not reach the API — Failed to fetch` on Transactions | The backend is down, **or** the UI's origin is not in `CORS_ORIGINS` | Check the Vite banner for the actual port. If it says 5174, free 5173 or add `http://localhost:5174` to `CORS_ORIGINS` in `backend/.env` and restart the API. |
-| `sqlite3.OperationalError: unable to open database file` | `backend/data/` does not exist | `New-Item -ItemType Directory -Force data` from `backend/` |
+| `sqlite3.OperationalError: unable to open database file` | `backend/data/` does not exist | `mkdir -p data` from `backend/` |
 | `ValidationError: database_url Field required` | No `.env` in the current directory | Copy `.env.example` to `backend/.env`, and run the API/CLI from `backend/` |
 | `Error loading ASGI app. Attribute "app" not found` | Pointed at `app.main:app`, which does not exist | Target the factory: `app.main:create_app --factory` |
 | `WARNING: ASGI app factory detected` | `--factory` omitted | Harmless — uvicorn detects it and proceeds. Pass `--factory` to silence it. |
 | `error: Multiple top-level packages discovered in a flat-layout: ['app', 'data']` during `pip install -e .` | setuptools auto-discovery saw both `app/` and `data/` and refused to guess which one is the package | Already fixed: `[tool.setuptools.packages.find] include = ["app*"]` in `backend/pyproject.toml`. If it returns, something removed that table — do not "fix" it by deleting `data/`. |
 | `sqlite3.OperationalError: no such column: transaction.<name>` | The database file predates a column the models have since added. `SQLModel.metadata.create_all` creates *missing tables*; it never alters an existing one, so there is no automatic migration | Delete `backend/data/portfolio.sqlite` and re-import (section 3). Check the row counts first if you are unsure what the file holds. |
-| Vite reports "Port 5173 is in use" | A stale dev server from an earlier session | `netstat -ano \| Select-String ":5173"`, then `taskkill /PID <pid> /F` |
+| Vite reports "Port 5173 is in use" | A stale dev server from an earlier session | `lsof -nP -iTCP:5173 -sTCP:LISTEN`, then `kill <pid>` |
+| `npm test` reports errors like `webidl.util.markAsUncloneable is not a function` while the tests themselves pass | Node is older than `engines` allows, so the jsdom component suites never start | Switch to the Node in `frontend/.nvmrc` (section 1), then re-run. Check `which node` — a Homebrew `node@20` earlier on `PATH` shadows a newer one |
+| `No module named uvicorn` / `python: command not found` | The backend venv is not active | `source .venv/bin/activate` from `backend/`, or prefix the command with `uv run` |
 | Numbers change when switching FIFO/LIFO/HIFO | Expected | The lot method changes every realised figure. TWR and MWR do **not** change — they are cashflow-based, not lot-based. |
 
 ### Freeing port 5173
 
-```powershell
-netstat -ano | Select-String ":5173.*LISTENING"
-taskkill /PID <pid> /F
+```sh
+lsof -nP -iTCP:5173 -sTCP:LISTEN   # the PID is the second column
+kill <pid>                         # kill -9 <pid> only if it ignores that
 ```
 
 ---
