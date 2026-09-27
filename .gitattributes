@@ -1,0 +1,4 @@
+# Store and check out every text file with LF, on every OS. Without this, a
+# checkout on Windows (core.autocrlf) writes CRLF to disk, and copying that
+# working tree to another machine shows every file as modified.
+* text=auto eol=lf
